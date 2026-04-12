@@ -1,1 +1,2 @@
-# DAT_VIZ
+# DAT_VIZ 
+vizualizacia datasetov Koper, Bezeg, Szczurek
