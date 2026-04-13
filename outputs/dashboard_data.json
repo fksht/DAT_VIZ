@@ -1,7 +1,8 @@
 {
   "meta": {
     "generated_from": "outputs/dashboard_data.json",
-    "html_role": "Doplnkovy HTML vystup. Finalna validacia patri do Tableau."
+    "html_role": "Doplnkovy HTML vystup. Finalna validacia patri do Tableau.",
+    "total_records": 655707
   },
   "pochopenie_dat": {
     "jazdy": {
@@ -16,6 +17,15 @@
         "V datasete nie su adresy, dovod jazdy, naklady ani prepravovany material.",
         "Surove suradnice mali zmiesany pocet cislic a museli sa standardizovat; 2 zaznamy ostali bez validnej startovacej polohy.",
         "Cast zaznamov ma velmi maly posun, preto sa pri interpretacii oddeluju near-zero zaznamy od beznych jazd."
+      ],
+      "answerable": [
+        "vytazenost vozidiel a rozlozenie jazd v case",
+        "porovnanie mesiacov, dni v tyzdni a vzdialenostnych pasiem",
+        "odhalenie near-zero a potencialne neefektivnych zaznamov"
+      ],
+      "not_answerable": [
+        "realne trasy po cestach a presne naklady",
+        "dovod jazdy, vodic a prepravovany material"
       ]
     },
     "material": {
@@ -29,6 +39,15 @@
         "Dataset obsahuje pohyby materialu, nie presny stav skladu v case.",
         "Nie je uvedeny smer pohybu, jednotka mnozstva ani cena materialu.",
         "Materialovy prefix je odvodeny z prvych 8 znakov kodu materialu a sluzi len ako jednoducha skupina."
+      ],
+      "answerable": [
+        "top prefixy, sezonnost pohybov a objemov",
+        "ABC segmentaciu a frekvenciu pohybov materialov",
+        "identifikaciu nulovych mnozstiev a dominantnych skupin"
+      ],
+      "not_answerable": [
+        "presny stav skladu v case",
+        "prijem vs. vydaj, cena a skladova lokacia"
       ]
     }
   },
@@ -40,6 +59,13 @@
       "Near-zero zaznamy": 6353,
       "Priemer km na platnu jazdu": 12.39,
       "Median km na platnu jazdu": 2.11
+    },
+    "totals": {
+      "valid_distance_km": 65007.61,
+      "avg_trips_per_vehicle": 644.5,
+      "near_zero_share_pct": 54.8,
+      "short_trip_count": 2984,
+      "weekend_trip_count": 1403
     },
     "charts": {
       "jazdy_podla_mesiaca": [
@@ -179,7 +205,189 @@
         }
       ]
     },
-    "comment": "Najviac jazd malo vozidlo SPZ26 (902), najmenej SPZ14 (341). Najsilnejsi den je St. Near-zero zaznamy tvoria 54.8 % vsetkych zaznamov, preto sa oplati pri Tableau dashboarde mat filter na tieto zaznamy."
+    "vehicle_table": [
+      {
+        "vehicle_id": "SPZ26",
+        "trip_count": 902,
+        "valid_trip_count": 402,
+        "valid_share_pct": 44.6,
+        "near_zero_share_pct": 55.4,
+        "inefficient_share_pct": 2.9,
+        "valid_distance_km": 3166.2,
+        "avg_valid_distance_km": 7.88
+      },
+      {
+        "vehicle_id": "SPZ24",
+        "trip_count": 875,
+        "valid_trip_count": 370,
+        "valid_share_pct": 42.3,
+        "near_zero_share_pct": 57.7,
+        "inefficient_share_pct": 0.6,
+        "valid_distance_km": 6015.7,
+        "avg_valid_distance_km": 16.26
+      },
+      {
+        "vehicle_id": "SPZ36",
+        "trip_count": 830,
+        "valid_trip_count": 348,
+        "valid_share_pct": 41.9,
+        "near_zero_share_pct": 58.1,
+        "inefficient_share_pct": 0.6,
+        "valid_distance_km": 5054.3,
+        "avg_valid_distance_km": 14.52
+      },
+      {
+        "vehicle_id": "SPZ32",
+        "trip_count": 745,
+        "valid_trip_count": 319,
+        "valid_share_pct": 42.8,
+        "near_zero_share_pct": 57.2,
+        "inefficient_share_pct": 2.4,
+        "valid_distance_km": 2283.1,
+        "avg_valid_distance_km": 7.16
+      },
+      {
+        "vehicle_id": "SPZ35",
+        "trip_count": 726,
+        "valid_trip_count": 351,
+        "valid_share_pct": 48.3,
+        "near_zero_share_pct": 51.7,
+        "inefficient_share_pct": 1.7,
+        "valid_distance_km": 4441.8,
+        "avg_valid_distance_km": 12.65
+      },
+      {
+        "vehicle_id": "SPZ15",
+        "trip_count": 722,
+        "valid_trip_count": 212,
+        "valid_share_pct": 29.4,
+        "near_zero_share_pct": 70.6,
+        "inefficient_share_pct": 1.9,
+        "valid_distance_km": 4956.3,
+        "avg_valid_distance_km": 23.38
+      },
+      {
+        "vehicle_id": "SPZ22",
+        "trip_count": 714,
+        "valid_trip_count": 423,
+        "valid_share_pct": 59.2,
+        "near_zero_share_pct": 40.8,
+        "inefficient_share_pct": 3.4,
+        "valid_distance_km": 2714.9,
+        "avg_valid_distance_km": 6.42
+      },
+      {
+        "vehicle_id": "SPZ28",
+        "trip_count": 707,
+        "valid_trip_count": 420,
+        "valid_share_pct": 59.4,
+        "near_zero_share_pct": 40.6,
+        "inefficient_share_pct": 5.1,
+        "valid_distance_km": 3353.7,
+        "avg_valid_distance_km": 7.99
+      },
+      {
+        "vehicle_id": "SPZ31",
+        "trip_count": 701,
+        "valid_trip_count": 245,
+        "valid_share_pct": 35.0,
+        "near_zero_share_pct": 65.0,
+        "inefficient_share_pct": 0.6,
+        "valid_distance_km": 1354.8,
+        "avg_valid_distance_km": 5.53
+      },
+      {
+        "vehicle_id": "SPZ39",
+        "trip_count": 641,
+        "valid_trip_count": 306,
+        "valid_share_pct": 47.7,
+        "near_zero_share_pct": 52.3,
+        "inefficient_share_pct": 2.5,
+        "valid_distance_km": 3693.6,
+        "avg_valid_distance_km": 12.07
+      },
+      {
+        "vehicle_id": "SPZ04",
+        "trip_count": 631,
+        "valid_trip_count": 352,
+        "valid_share_pct": 55.8,
+        "near_zero_share_pct": 44.2,
+        "inefficient_share_pct": 1.6,
+        "valid_distance_km": 5806.6,
+        "avg_valid_distance_km": 16.5
+      },
+      {
+        "vehicle_id": "SPZ27",
+        "trip_count": 610,
+        "valid_trip_count": 217,
+        "valid_share_pct": 35.6,
+        "near_zero_share_pct": 64.4,
+        "inefficient_share_pct": 6.2,
+        "valid_distance_km": 1020.6,
+        "avg_valid_distance_km": 4.7
+      },
+      {
+        "vehicle_id": "SPZ20",
+        "trip_count": 572,
+        "valid_trip_count": 189,
+        "valid_share_pct": 33.0,
+        "near_zero_share_pct": 67.0,
+        "inefficient_share_pct": 2.4,
+        "valid_distance_km": 643.0,
+        "avg_valid_distance_km": 3.4
+      },
+      {
+        "vehicle_id": "SPZ01",
+        "trip_count": 560,
+        "valid_trip_count": 195,
+        "valid_share_pct": 34.8,
+        "near_zero_share_pct": 65.2,
+        "inefficient_share_pct": 0.4,
+        "valid_distance_km": 5196.4,
+        "avg_valid_distance_km": 26.65
+      },
+      {
+        "vehicle_id": "SPZ33",
+        "trip_count": 498,
+        "valid_trip_count": 263,
+        "valid_share_pct": 52.8,
+        "near_zero_share_pct": 47.2,
+        "inefficient_share_pct": 4.0,
+        "valid_distance_km": 3298.2,
+        "avg_valid_distance_km": 12.54
+      },
+      {
+        "vehicle_id": "SPZ11",
+        "trip_count": 423,
+        "valid_trip_count": 232,
+        "valid_share_pct": 54.8,
+        "near_zero_share_pct": 45.2,
+        "inefficient_share_pct": 3.8,
+        "valid_distance_km": 3448.0,
+        "avg_valid_distance_km": 14.86
+      },
+      {
+        "vehicle_id": "SPZ25",
+        "trip_count": 403,
+        "valid_trip_count": 239,
+        "valid_share_pct": 59.3,
+        "near_zero_share_pct": 40.7,
+        "inefficient_share_pct": 3.2,
+        "valid_distance_km": 6876.6,
+        "avg_valid_distance_km": 28.77
+      },
+      {
+        "vehicle_id": "SPZ14",
+        "trip_count": 341,
+        "valid_trip_count": 165,
+        "valid_share_pct": 48.4,
+        "near_zero_share_pct": 51.6,
+        "inefficient_share_pct": 10.3,
+        "valid_distance_km": 1683.8,
+        "avg_valid_distance_km": 10.2
+      }
+    ],
+    "comment": "Najviac jazd malo vozidlo SPZ26 (902), najmenej SPZ14 (341). Najsilnejsi den je St. Najvyssi podiel platnych jazd ma SPZ28 (59.4 %). Near-zero zaznamy tvoria 54.8 % vsetkych zaznamov."
   },
   "material": {
     "kpi": {
@@ -189,6 +397,11 @@
       "Celkove mnozstvo": 177585193.0,
       "Priemerne mnozstvo": 275.7,
       "Median mnozstva": 9.0
+    },
+    "totals": {
+      "zero_quantity_record_count": 172,
+      "top_quantity_month": "11/2024",
+      "top_quantity_month_value": 14860462.0
     },
     "charts": {
       "pohyby_podla_mesiaca": [
@@ -532,11 +745,106 @@
         }
       ]
     },
-    "comment": "Najaktivnejsi prefix podla poctu pohybov je MAT07111 (273548 pohybov). Interpretacia je o pohyboch materialu, nie o presnom stave skladu, preto sa v texte ani vo vizualizaciach nehovori o zasobach na sklade."
+    "prefix_table": [
+      {
+        "material_prefix": "MAT07111",
+        "movement_count": 273548,
+        "movement_share_pct": 42.5,
+        "total_quantity": 6895672.5,
+        "quantity_share_pct": 3.9,
+        "unique_material_count": 173,
+        "profile": "frekventovany"
+      },
+      {
+        "material_prefix": "MAT07110",
+        "movement_count": 108754,
+        "movement_share_pct": 16.9,
+        "total_quantity": 2930287.5,
+        "quantity_share_pct": 1.7,
+        "unique_material_count": 168,
+        "profile": "frekventovany"
+      },
+      {
+        "material_prefix": "MAT07697",
+        "movement_count": 59033,
+        "movement_share_pct": 9.2,
+        "total_quantity": 139738682.8,
+        "quantity_share_pct": 78.7,
+        "unique_material_count": 116,
+        "profile": "objemovo dominantny"
+      },
+      {
+        "material_prefix": "MAT07309",
+        "movement_count": 50332,
+        "movement_share_pct": 7.8,
+        "total_quantity": 6114972.0,
+        "quantity_share_pct": 3.4,
+        "unique_material_count": 13,
+        "profile": "frekventovany"
+      },
+      {
+        "material_prefix": "MAT07711",
+        "movement_count": 32345,
+        "movement_share_pct": 5.0,
+        "total_quantity": 663806.7,
+        "quantity_share_pct": 0.4,
+        "unique_material_count": 10,
+        "profile": "frekventovany"
+      },
+      {
+        "material_prefix": "MAT07107",
+        "movement_count": 28155,
+        "movement_share_pct": 4.4,
+        "total_quantity": 2334489.0,
+        "quantity_share_pct": 1.3,
+        "unique_material_count": 9,
+        "profile": "stabilny"
+      },
+      {
+        "material_prefix": "MAT07607",
+        "movement_count": 19820,
+        "movement_share_pct": 3.1,
+        "total_quantity": 435513.0,
+        "quantity_share_pct": 0.2,
+        "unique_material_count": 36,
+        "profile": "sirsie portfolio"
+      },
+      {
+        "material_prefix": "MAT07565",
+        "movement_count": 18409,
+        "movement_share_pct": 2.9,
+        "total_quantity": 1415490.0,
+        "quantity_share_pct": 0.8,
+        "unique_material_count": 16,
+        "profile": "stabilny"
+      },
+      {
+        "material_prefix": "MAT07283",
+        "movement_count": 14186,
+        "movement_share_pct": 2.2,
+        "total_quantity": 16059027.8,
+        "quantity_share_pct": 9.0,
+        "unique_material_count": 20,
+        "profile": "sirsie portfolio"
+      },
+      {
+        "material_prefix": "MAT07624",
+        "movement_count": 14045,
+        "movement_share_pct": 2.2,
+        "total_quantity": 228609.0,
+        "quantity_share_pct": 0.1,
+        "unique_material_count": 6,
+        "profile": "stabilny"
+      }
+    ],
+    "comment": "Najaktivnejsi prefix podla poctu pohybov je MAT07111 (273548 pohybov). Podla celkoveho mnozstva jednoznacne dominuje MAT07697 (139,738,682.8). Najsilnejsi mesiac podla objemu je 11/2024."
   },
   "pokrocilejsia_analytika": {
     "jazdy": {
       "potentially_inefficient_trip_count": 308,
+      "short_trip_count": 2984,
+      "near_zero_trip_count": 6353,
+      "weekend_trip_count": 1403,
       "description": "Heuristika oznacuje zaznamy s trvanim aspon 30 minut a so zmenou polohy pod 0,5 km. Ide len o signal na kontrolu, nie o dokazanu neefektivitu.",
       "top_vehicle_shares": [
         {
@@ -569,24 +877,41 @@
           "inefficient_trip_count": 16,
           "inefficient_share_pct": 3.8
         }
-      ]
+      ],
+      "watch_vehicle": {
+        "vehicle_id": "SPZ14",
+        "share_pct": 10.3
+      }
     },
     "material": {
       "abc_summary": [
         {
           "abc_segment": "A",
-          "unique_material_count": 32
+          "unique_material_count": 32,
+          "movement_count": 76205,
+          "movement_share_pct": 11.8,
+          "total_quantity": 141595188.2,
+          "quantity_share_pct": 79.7
         },
         {
           "abc_segment": "B",
-          "unique_material_count": 70
+          "unique_material_count": 70,
+          "movement_count": 279774,
+          "movement_share_pct": 43.4,
+          "total_quantity": 27054940.5,
+          "quantity_share_pct": 15.2
         },
         {
           "abc_segment": "C",
-          "unique_material_count": 588
+          "unique_material_count": 588,
+          "movement_count": 288127,
+          "movement_share_pct": 44.7,
+          "total_quantity": 8935064.0,
+          "quantity_share_pct": 5.0
         }
       ],
-      "description": "Pouzita je jednoducha ABC segmentacia podla kumulativneho podielu na celkovom mnozstve. Je interpretovatelnejsia ako clustering a lepsie sa obhajuje v studentskom projekte."
+      "zero_quantity_record_count": 172,
+      "description": "Pouzita je jednoducha ABC segmentacia podla kumulativneho podielu na celkovom mnozstve. Je interpretovatelnejsia ako clustering a lahsie sa obhajuje v studentskom projekte."
     }
   },
   "porovnanie_html_vs_tableau": {
