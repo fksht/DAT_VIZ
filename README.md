@@ -10,7 +10,7 @@ Projekt je pripraveny tak, aby sa dal lahko spustit, lahko importovat do Tableau
 ## Co je povinne a co je len doplnok
 
 - Povinne: Tableau dashboardy postavene z `outputs/cleaned_jazdy.csv` a `outputs/cleaned_material.csv`
-- Doplnok: `visualization/analyza_dashboard.html`
+- Doplnok: `visualization/analyza_dashboard.html`, ktory sa generuje priamo z `data/clean/dataset_jazdy_2024_cleaned.xlsx` a `data/raw/dataset_material_2023_2025.xlsx`
 
 HTML nenahradza Tableau. Sluzí len ako jednoduchy sprievodny vystup.
 
@@ -29,8 +29,6 @@ scripts/
 outputs/
   cleaned_jazdy.csv
   cleaned_material.csv
-  dashboard_data.json
-  tableau_validation_metrics.csv
 
 visualization/
   analyza_dashboard.html
@@ -50,7 +48,6 @@ Ak uz mate pripravene virtualne prostredie:
 source .venv/bin/activate
 python scripts/01_prepare_data.py
 python scripts/02_build_dashboard.py
-python scripts/03_prepare_tableau_validation.py
 ```
 
 Ak virtualne prostredie este nemate:
@@ -61,6 +58,11 @@ source .venv/bin/activate
 pip install pandas openpyxl
 python scripts/01_prepare_data.py
 python scripts/02_build_dashboard.py
+```
+
+Volitelne, ak chcete mat extra kontrolny CSV subor pre Tableau:
+
+```bash
 python scripts/03_prepare_tableau_validation.py
 ```
 
@@ -76,9 +78,8 @@ Importujte iba:
 
 - `outputs/cleaned_jazdy.csv`
 - `outputs/cleaned_material.csv`
-- `outputs/tableau_validation_metrics.csv`
 
-`tableau_validation_metrics.csv` sluzi len na krizovu kontrolu hlavnych KPI.
+`tableau_validation_metrics.csv` je len volitelny krizovy kontrolny export, ak si ho chcete znova vygenerovat cez `scripts/03_prepare_tableau_validation.py`.
 
 ## Dolezite obmedzenia projektu
 

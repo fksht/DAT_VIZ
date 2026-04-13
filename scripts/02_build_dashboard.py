@@ -1,20 +1,45 @@
 from __future__ import annotations
 
 import json
+from datetime import time
 from html import escape
 from pathlib import Path
 
+import numpy as np
 import pandas as pd
 
 
 ROOT = Path(__file__).resolve().parents[1]
-OUT_DIR = ROOT / "outputs"
 VIS_DIR = ROOT / "visualization"
 
-JAZDY_INPUT = OUT_DIR / "cleaned_jazdy.csv"
-MATERIAL_INPUT = OUT_DIR / "cleaned_material.csv"
-JSON_OUTPUT = OUT_DIR / "dashboard_data.json"
+JAZDY_INPUT = ROOT / "data" / "clean" / "dataset_jazdy_2024_cleaned.xlsx"
+MATERIAL_INPUT = ROOT / "data" / "raw" / "dataset_material_2023_2025.xlsx"
 HTML_OUTPUT = VIS_DIR / "analyza_dashboard.html"
+
+MONTH_NAMES_SK = {
+    1: "januar",
+    2: "februar",
+    3: "marec",
+    4: "april",
+    5: "maj",
+    6: "jun",
+    7: "jul",
+    8: "august",
+    9: "september",
+    10: "oktober",
+    11: "november",
+    12: "december",
+}
+
+WEEKDAY_NAMES_SK = {
+    0: "Po",
+    1: "Ut",
+    2: "St",
+    3: "Stv",
+    4: "Pi",
+    5: "So",
+    6: "Ne",
+}
 
 JAZDY_FIELDS = [
     {
@@ -76,6 +101,240 @@ MATERIAL_FIELDS = [
         "type": "CATEGORY",
     },
 ]
+
+
+def parse_mixed_date(value: object, formats: list[str]) -> pd.Timestamp:
+    if pd.isna(value):
+        return pd.NaT
+    if isinstance(value, pd.Timestamp):
+        return value
+
+    text = str(value).strip()
+    for fmt in formats:
+        try:
+            return pd.to_datetime(text, format=fmt)
+        except (TypeError, ValueError):
+            continue
+
+    return pd.to_datetime(text, errors="coerce", dayfirst=True)
+
+
+def format_time(value: object) -> str:
+    if pd.isna(value):
+        return ""
+    if isinstance(value, time):
+        return value.strftime("%H:%M:%S")
+    if isinstance(value, pd.Timestamp):
+        return value.strftime("%H:%M:%S")
+
+    text = str(value).strip()
+    try:
+        parsed = pd.to_datetime(text, format="%H:%M:%S")
+        return parsed.strftime("%H:%M:%S")
+    except (TypeError, ValueError):
+        return text
+
+
+def parse_time_to_seconds(value: object) -> float:
+    if pd.isna(value):
+        return np.nan
+    if isinstance(value, time):
+        return float(value.hour * 3600 + value.minute * 60 + value.second)
+    if isinstance(value, pd.Timestamp):
+        return float(value.hour * 3600 + value.minute * 60 + value.second)
+
+    parts = str(value).strip().split(":")
+    if len(parts) != 3:
+        return np.nan
+
+    try:
+        return float(int(parts[0]) * 3600 + int(parts[1]) * 60 + int(parts[2]))
+    except ValueError:
+        return np.nan
+
+
+def parse_decimal_or_scaled(value: object, scaled_divisor: float = 1e8) -> float:
+    if pd.isna(value):
+        return np.nan
+    if isinstance(value, str):
+        text = value.strip().replace(",", ".")
+        try:
+            return float(text)
+        except ValueError:
+            return np.nan
+
+    try:
+        numeric = float(value)
+    except (TypeError, ValueError):
+        return np.nan
+
+    if numeric > 10000:
+        return numeric / scaled_divisor
+    return numeric
+
+
+def parse_quantity(value: object) -> float:
+    if pd.isna(value):
+        return np.nan
+    if isinstance(value, str):
+        return float(value.strip().replace(",", "."))
+    return float(value)
+
+
+def parse_coordinate(value: object) -> float:
+    if pd.isna(value):
+        return np.nan
+
+    try:
+        integer = int(value)
+    except (TypeError, ValueError):
+        return np.nan
+
+    if integer <= 0:
+        return np.nan
+
+    digits = len(str(abs(integer)))
+    if digits <= 2:
+        return np.nan
+
+    return integer / (10 ** (digits - 2))
+
+
+def classify_abc(cumulative_share: float) -> str:
+    if cumulative_share <= 0.80:
+        return "A"
+    if cumulative_share <= 0.95:
+        return "B"
+    return "C"
+
+
+def load_jazdy_dataset(path: Path) -> pd.DataFrame:
+    if path.suffix.lower() == ".csv":
+        return pd.read_csv(path)
+
+    df = pd.read_excel(path)
+    df["trip_date_dt"] = df["DATUM"].apply(
+        lambda value: parse_mixed_date(
+            value,
+            [
+                "%d. %m. %Y",
+                "%d.%m.%Y",
+                "%Y-%m-%d %H:%M:%S",
+                "%Y-%m-%d",
+            ],
+        )
+    )
+
+    invalid_dates = int(df["trip_date_dt"].isna().sum())
+    if invalid_dates:
+        raise ValueError(f"Invalid trip dates found: {invalid_dates}")
+
+    start_seconds = df["CAS_OD"].apply(parse_time_to_seconds)
+    end_seconds = df["CAS_DO"].apply(parse_time_to_seconds)
+    duration_minutes = (end_seconds - start_seconds) / 60
+    duration_minutes = duration_minutes.where(duration_minutes >= 0, duration_minutes + 1440)
+
+    start_lat = df["EW_START"].apply(parse_coordinate)
+    start_lon = df["EL_START"].apply(parse_coordinate)
+    end_lat = df["EW_END"].apply(parse_coordinate)
+    end_lon = df["EL_END"].apply(parse_coordinate)
+
+    coord_valid = (
+        start_lat.between(47, 50.5)
+        & start_lon.between(16, 23)
+        & end_lat.between(47, 50.5)
+        & end_lon.between(16, 23)
+    )
+
+    cleaned = pd.DataFrame(
+        {
+            "trip_date": df["trip_date_dt"].dt.strftime("%Y-%m-%d"),
+            "year": df["trip_date_dt"].dt.year.astype(int),
+            "month": df["trip_date_dt"].dt.month.astype(int),
+            "year_month": df["trip_date_dt"].dt.to_period("M").astype(str),
+            "month_name_sk": df["trip_date_dt"].dt.month.map(MONTH_NAMES_SK),
+            "weekday_num": df["trip_date_dt"].dt.dayofweek.astype(int),
+            "weekday_sk": df["trip_date_dt"].dt.dayofweek.map(WEEKDAY_NAMES_SK),
+            "vehicle_id": df["SPZ"].astype(str),
+            "time_start": df["CAS_OD"].apply(format_time),
+            "time_end": df["CAS_DO"].apply(format_time),
+            "trip_duration_min": duration_minutes,
+            "stoppage_min": df["DOBA_STATIA_MIN"].apply(parse_decimal_or_scaled),
+            "distance_m": pd.to_numeric(df["DIST_START_END_M"], errors="coerce") / 1e9,
+            "distance_km": pd.to_numeric(df["DIST_START_END_M"], errors="coerce") / 1e12,
+            "start_lat": start_lat,
+            "start_lon": start_lon,
+            "end_lat": end_lat,
+            "end_lon": end_lon,
+            "coord_valid": coord_valid,
+        }
+    )
+
+    cleaned.loc[~cleaned["coord_valid"], ["start_lat", "start_lon", "end_lat", "end_lon"]] = np.nan
+    cleaned["near_zero_trip"] = cleaned["distance_m"] < 50
+    cleaned["short_trip"] = (~cleaned["near_zero_trip"]) & (cleaned["distance_km"] < 5)
+    cleaned["potentially_inefficient_trip"] = (
+        (~cleaned["near_zero_trip"])
+        & (cleaned["distance_m"] < 500)
+        & (cleaned["trip_duration_min"] >= 30)
+    )
+    cleaned["weekend"] = cleaned["weekday_num"] >= 5
+    return cleaned
+
+
+def load_material_dataset(path: Path) -> pd.DataFrame:
+    if path.suffix.lower() == ".csv":
+        return pd.read_csv(path)
+
+    df = pd.read_excel(path)
+    df["movement_dt"] = df["DATUM"].apply(
+        lambda value: parse_mixed_date(
+            value,
+            [
+                "%d. %m. %Y %H:%M:%S",
+                "%d.%m.%Y %H:%M:%S",
+                "%d. %m. %Y %H:%M",
+                "%Y-%m-%d %H:%M:%S",
+                "%Y-%m-%d",
+            ],
+        )
+    )
+
+    invalid_dates = int(df["movement_dt"].isna().sum())
+    if invalid_dates:
+        raise ValueError(f"Invalid material dates found: {invalid_dates}")
+
+    cleaned = pd.DataFrame(
+        {
+            "movement_datetime": df["movement_dt"].dt.strftime("%Y-%m-%d %H:%M:%S"),
+            "movement_date": df["movement_dt"].dt.strftime("%Y-%m-%d"),
+            "year": df["movement_dt"].dt.year.astype(int),
+            "month": df["movement_dt"].dt.month.astype(int),
+            "year_month": df["movement_dt"].dt.to_period("M").astype(str),
+            "material_number": df["MAT_NR"].astype(str),
+            "material_prefix": df["MAT_NR"].astype(str).str[:8],
+            "quantity_clean": df["MNOZSTVO"].apply(parse_quantity),
+        }
+    )
+
+    cleaned["zero_quantity_record"] = cleaned["quantity_clean"] == 0
+
+    material_totals = (
+        cleaned.groupby("material_number", as_index=False)
+        .agg(total_quantity=("quantity_clean", "sum"))
+        .sort_values("total_quantity", ascending=False)
+    )
+    material_totals["cumulative_share"] = (
+        material_totals["total_quantity"].cumsum() / material_totals["total_quantity"].sum()
+    )
+    material_totals["abc_segment"] = material_totals["cumulative_share"].apply(classify_abc)
+
+    cleaned = cleaned.merge(
+        material_totals[["material_number", "abc_segment"]],
+        on="material_number",
+        how="left",
+    )
+    return cleaned
 
 
 def fmt_int(value: float | int) -> str:
@@ -245,9 +504,19 @@ def build_dashboard_data(jazdy: pd.DataFrame, material: pd.DataFrame) -> dict:
 
     dashboard = {
         "meta": {
-            "generated_from": "outputs/dashboard_data.json",
-            "html_role": "Doplnkovy HTML vystup. Finalna validacia patri do Tableau.",
             "total_records": int(len(jazdy) + len(material)),
+            "dataset_cards": [
+                {
+                    "label": "Dataset 1",
+                    "value": int(len(jazdy)),
+                    "note": "Jazdy vozidiel za sledovane obdobie",
+                },
+                {
+                    "label": "Dataset 2",
+                    "value": int(len(material)),
+                    "note": "Pohyby materialu za sledovane obdobie",
+                },
+            ],
         },
         "pochopenie_dat": {
             "jazdy": {
@@ -452,7 +721,7 @@ def build_dashboard_data(jazdy: pd.DataFrame, material: pd.DataFrame) -> dict:
         },
         "porovnanie_html_vs_tableau": {
             "message": (
-                "HTML je doplnkovy artefakt postaveny na tych istych CSV. Ak sa cisla v HTML a Tableau lisia, "
+                "HTML je doplnkovy artefakt postaveny na tych istych datasetoch. Ak sa cisla v HTML a Tableau lisia, "
                 "najprv treba skontrolovat filtre, typy datumov a rozdiel medzi COUNT a COUNTD. "
                 "Pri finalnej obhajobe ma prednost validacia v Tableau."
             )
@@ -522,6 +791,21 @@ def render_kpi_cards(cards: list[dict]) -> str:
     return "".join(items)
 
 
+def render_header_cards(cards: list[dict]) -> str:
+    items = []
+    for card in cards:
+        items.append(
+            f"""
+            <div class="meta-card">
+              <div class="meta-label">{escape(card["label"])}</div>
+              <div class="meta-value">{fmt_int(card["value"])}</div>
+              <div class="meta-note">{escape(card["note"])}</div>
+            </div>
+            """
+        )
+    return "".join(items)
+
+
 def render_table(title: str, headers: list[str], rows: list[list[str]], intro: str | None = None) -> str:
     header_html = "".join(f"<th>{escape(header)}</th>" for header in headers)
     row_html = []
@@ -568,8 +852,10 @@ def build_html(dashboard: dict) -> str:
     jazdy = dashboard["jazdy"]
     material = dashboard["material"]
     advanced = dashboard["pokrocilejsia_analytika"]
+    meta = dashboard["meta"]
 
-    header_total = fmt_int(dashboard["meta"]["total_records"])
+    header_total = fmt_int(meta["total_records"])
+    header_cards = render_header_cards(meta["dataset_cards"])
     header_sub = (
         f"Jazdy {understanding['jazdy']['date_range'][0]} - {understanding['jazdy']['date_range'][1]} "
         f"| Material {understanding['material']['date_range'][0]} - {understanding['material']['date_range'][1]} "
@@ -884,7 +1170,7 @@ def build_html(dashboard: dict) -> str:
     <section id="tab-pokrocila" class="section">
       <div class="section-title">Pokrocila analytika</div>
       <p class="section-copy">
-        Tato cast nepretlaca zbytocne scenare. Zvyraznuje iba tie signaly, ktore sa daju obhajit na zaklade aktualnych CSV.
+        Tato cast nepretlaca zbytocne scenare. Zvyraznuje iba tie signaly, ktore sa daju obhajit na zaklade aktualnych datasetov.
       </p>
 
       <div class="grid-2">
@@ -953,7 +1239,7 @@ def build_html(dashboard: dict) -> str:
         <div class="card-title">HTML vs Tableau validation</div>
         <p class="section-copy">{escape(dashboard["porovnanie_html_vs_tableau"]["message"])}</p>
         <ul class="validation-list">
-          <li>HTML je doplnok postaveny na tych istych CSV ako kontrolne metriky.</li>
+          <li>HTML je doplnok postaveny na tych istych datasetoch ako Tableau analyza.</li>
           <li>Pri rozdiele treba porovnat filtre, datumove typy a rozdiel medzi COUNT a COUNTD.</li>
           <li>Do finalnej obhajoby ma prednost validacia v Tableau.</li>
         </ul>
@@ -1067,23 +1353,8 @@ def build_html(dashboard: dict) -> str:
       z-index: 1;
     }
 
-    .header-tag {
-      display: inline-flex;
-      align-items: center;
-      gap: 8px;
-      padding: 6px 10px;
-      border: 1px solid rgba(0, 212, 255, 0.28);
-      border-radius: 999px;
-      color: var(--accent1);
-      background: rgba(0, 212, 255, 0.08);
-      font-family: var(--font-mono);
-      font-size: 11px;
-      letter-spacing: 1.3px;
-      text-transform: uppercase;
-    }
-
     h1 {
-      margin: 18px 0 8px;
+      margin: 0 0 8px;
       font-family: var(--font-head);
       font-size: clamp(34px, 5vw, 54px);
       letter-spacing: -0.03em;
@@ -1103,7 +1374,7 @@ def build_html(dashboard: dict) -> str:
 
     .meta-strip {
       display: grid;
-      grid-template-columns: repeat(3, minmax(0, 1fr));
+      grid-template-columns: repeat(2, minmax(0, 1fr));
       gap: 14px;
       margin-top: 24px;
     }
@@ -1463,6 +1734,43 @@ def build_html(dashboard: dict) -> str:
       display: block;
     }
 
+    .chart-tooltip {
+      position: fixed;
+      left: 0;
+      top: 0;
+      z-index: 90;
+      min-width: 126px;
+      padding: 10px 12px;
+      border: 1px solid rgba(157, 177, 202, 0.18);
+      border-radius: 12px;
+      background: rgba(6, 12, 22, 0.96);
+      box-shadow: 0 16px 34px rgba(0, 0, 0, 0.34);
+      pointer-events: none;
+      opacity: 0;
+      transform: translate3d(0, 6px, 0);
+      transition: opacity 0.12s ease, transform 0.12s ease;
+    }
+
+    .chart-tooltip.visible {
+      opacity: 1;
+      transform: translate3d(0, 0, 0);
+    }
+
+    .chart-tooltip-label {
+      margin-bottom: 4px;
+      color: var(--text-soft);
+      font-family: var(--font-mono);
+      font-size: 10px;
+      letter-spacing: 1.1px;
+    }
+
+    .chart-tooltip-value {
+      color: var(--text);
+      font-family: var(--font-head);
+      font-size: 18px;
+      line-height: 1.1;
+    }
+
     .table-card {
       margin-bottom: 18px;
     }
@@ -1591,27 +1899,10 @@ def build_html(dashboard: dict) -> str:
 <body>
   <header>
     <div class="page-shell">
-      <div class="header-tag">Tableau + HTML supplement</div>
       <h1>Analyticky <span>Dashboard</span></h1>
       <div class="header-sub">__HEADER_SUB__</div>
 
-      <div class="meta-strip">
-        <div class="meta-card">
-          <div class="meta-label">Spolu zaznamov</div>
-          <div class="meta-value">__HEADER_TOTAL__</div>
-          <div class="meta-note">Jazdy + materialove pohyby po vycisteni CSV</div>
-        </div>
-        <div class="meta-card">
-          <div class="meta-label">Uloha HTML</div>
-          <div class="meta-value">Doplnkovy prehlad</div>
-          <div class="meta-note">Nie nahrada finalnej validacie v Tableau</div>
-        </div>
-        <div class="meta-card">
-          <div class="meta-label">Zdroj artefaktu</div>
-          <div class="meta-value">outputs/dashboard_data.json</div>
-          <div class="meta-note">Vsetky cisla v stranke sa generuju z aktualnych vystupov</div>
-        </div>
-      </div>
+      <div class="meta-strip">__HEADER_DATASET_CARDS__</div>
     </div>
   </header>
 
@@ -1634,9 +1925,17 @@ def build_html(dashboard: dict) -> str:
     <div class="footer-note">Vystup je samostatny HTML export. Pri regeneracii sa prepise zo skriptu `scripts/02_build_dashboard.py`.</div>
   </main>
 
+  <div id="chartTooltip" class="chart-tooltip" aria-hidden="true">
+    <div class="chart-tooltip-label"></div>
+    <div class="chart-tooltip-value"></div>
+  </div>
+
   <script id="dashboard-data" type="application/json">__JSON_BLOB__</script>
   <script>
     const dashboard = JSON.parse(document.getElementById("dashboard-data").textContent);
+    const chartTooltip = document.getElementById("chartTooltip");
+    const chartTooltipLabel = chartTooltip.querySelector(".chart-tooltip-label");
+    const chartTooltipValue = chartTooltip.querySelector(".chart-tooltip-value");
     const palette = {
       accent1: "#00d4ff",
       accent2: "#ff7a45",
@@ -1687,7 +1986,7 @@ def build_html(dashboard: dict) -> str:
       const ctx = canvas.getContext("2d");
       ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
       ctx.clearRect(0, 0, rect.width, height);
-      return { ctx, width: rect.width, height };
+      return { canvas, ctx, width: rect.width, height };
     }
 
     function fillRoundedRect(ctx, x, y, width, height, radius) {
@@ -1702,17 +2001,89 @@ def build_html(dashboard: dict) -> str:
       ctx.fill();
     }
 
-    function drawBarChart(id, items, color, formatter = (value) => formatNumber(value, 0)) {
+    function hideChartTooltip() {
+      chartTooltip.classList.remove("visible");
+      chartTooltip.setAttribute("aria-hidden", "true");
+    }
+
+    function positionChartTooltip(event) {
+      const offset = 16;
+      const rect = chartTooltip.getBoundingClientRect();
+      let left = event.clientX + offset;
+      let top = event.clientY + offset;
+
+      if (left + rect.width > window.innerWidth - 12) {
+        left = event.clientX - rect.width - offset;
+      }
+      if (top + rect.height > window.innerHeight - 12) {
+        top = event.clientY - rect.height - offset;
+      }
+
+      chartTooltip.style.left = Math.max(12, left) + "px";
+      chartTooltip.style.top = Math.max(12, top) + "px";
+    }
+
+    function showChartTooltip(event, hitBox) {
+      chartTooltipLabel.textContent = hitBox.label;
+      chartTooltipValue.textContent = hitBox.tooltipValue;
+      positionChartTooltip(event);
+      chartTooltip.classList.add("visible");
+      chartTooltip.setAttribute("aria-hidden", "false");
+    }
+
+    function bindChartHover(canvas, hitBoxes) {
+      canvas.__chartHitBoxes = hitBoxes;
+
+      if (canvas.dataset.hoverBound === "true") {
+        return;
+      }
+
+      canvas.dataset.hoverBound = "true";
+      canvas.addEventListener("mousemove", (event) => {
+        const rect = canvas.getBoundingClientRect();
+        const x = event.clientX - rect.left;
+        const y = event.clientY - rect.top;
+        const hitBox = (canvas.__chartHitBoxes || []).find(
+          (item) =>
+            x >= item.x
+            && x <= item.x + item.width
+            && y >= item.y
+            && y <= item.y + item.height
+        );
+
+        canvas.style.cursor = hitBox ? "pointer" : "default";
+        if (!hitBox) {
+          hideChartTooltip();
+          return;
+        }
+
+        showChartTooltip(event, hitBox);
+      });
+
+      canvas.addEventListener("mouseleave", () => {
+        canvas.style.cursor = "default";
+        hideChartTooltip();
+      });
+    }
+
+    function drawBarChart(
+      id,
+      items,
+      color,
+      formatter = (value) => formatNumber(value, 0),
+      options = {}
+    ) {
       const setup = prepCanvas(id);
       if (!setup || !items.length) return;
 
-      const { ctx, width, height } = setup;
+      const { canvas, ctx, width, height } = setup;
       const pad = { top: 20, right: 14, bottom: 40, left: 54 };
       const chartWidth = width - pad.left - pad.right;
       const chartHeight = height - pad.top - pad.bottom;
       const maxValue = Math.max(...items.map((item) => Number(item.value))) * 1.12 || 1;
       const step = chartWidth / items.length;
       const barWidth = Math.max(10, Math.min(28, step * 0.62));
+      const hitBoxes = [];
 
       ctx.strokeStyle = palette.grid;
       ctx.fillStyle = palette.textSoft;
@@ -1733,12 +2104,25 @@ def build_html(dashboard: dict) -> str:
         const barHeight = (value / maxValue) * chartHeight;
         const x = pad.left + index * step + (step - barWidth) / 2;
         const y = pad.top + chartHeight - barHeight;
+        const visibleHeight = Math.max(barHeight, 2);
 
         const gradient = ctx.createLinearGradient(0, y, 0, y + barHeight);
         gradient.addColorStop(0, color);
         gradient.addColorStop(1, color + "33");
         ctx.fillStyle = gradient;
-        fillRoundedRect(ctx, x, y, barWidth, Math.max(barHeight, 2), 5);
+        fillRoundedRect(ctx, x, y, barWidth, visibleHeight, 5);
+
+        if (options.tooltip) {
+          const tooltipFormatter = options.tooltipFormatter || formatter;
+          hitBoxes.push({
+            x,
+            y,
+            width: barWidth,
+            height: visibleHeight,
+            label: item.label,
+            tooltipValue: tooltipFormatter(value),
+          });
+        }
 
         const showLabel = items.length <= 14 || index % 2 === 0;
         if (showLabel) {
@@ -1748,19 +2132,30 @@ def build_html(dashboard: dict) -> str:
           ctx.fillText(item.label, x + barWidth / 2, height - 14);
         }
       });
+
+      if (options.tooltip) {
+        bindChartHover(canvas, hitBoxes);
+      }
     }
 
-    function drawHorizontalBars(id, items, color, formatter = (value) => formatNumber(value, 0)) {
+    function drawHorizontalBars(
+      id,
+      items,
+      color,
+      formatter = (value) => formatNumber(value, 0),
+      options = {}
+    ) {
       const setup = prepCanvas(id);
       if (!setup || !items.length) return;
 
-      const { ctx, width, height } = setup;
+      const { canvas, ctx, width, height } = setup;
       const pad = { top: 16, right: 90, bottom: 12, left: 88 };
       const chartWidth = width - pad.left - pad.right;
       const chartHeight = height - pad.top - pad.bottom;
       const maxValue = Math.max(...items.map((item) => Number(item.value))) * 1.08 || 1;
       const rowHeight = chartHeight / items.length;
       const barHeight = Math.max(12, rowHeight * 0.54);
+      const hitBoxes = [];
 
       items.forEach((item, index) => {
         const value = Number(item.value);
@@ -1784,7 +2179,23 @@ def build_html(dashboard: dict) -> str:
         ctx.fillStyle = palette.text;
         ctx.textAlign = "left";
         ctx.fillText(formatter(value), pad.left + barWidth + 8, y + barHeight / 2 + 4);
+
+        if (options.tooltip) {
+          const tooltipFormatter = options.tooltipFormatter || formatter;
+          hitBoxes.push({
+            x: pad.left,
+            y,
+            width: barWidth,
+            height: barHeight,
+            label: item.label,
+            tooltipValue: tooltipFormatter(value),
+          });
+        }
       });
+
+      if (options.tooltip) {
+        bindChartHover(canvas, hitBoxes);
+      }
     }
 
     function drawDonutChart(id, items, colors, formatter = (value) => formatNumber(value, 0)) {
@@ -1847,14 +2258,32 @@ def build_html(dashboard: dict) -> str:
     }
 
     function drawTripsCharts() {
-      drawBarChart("chartMonthlyTrips", dashboard.jazdy.charts.jazdy_podla_mesiaca, palette.accent1);
-      drawBarChart("chartWeekdayTrips", dashboard.jazdy.charts.jazdy_podla_dna, palette.accent4);
+      drawBarChart(
+        "chartMonthlyTrips",
+        dashboard.jazdy.charts.jazdy_podla_mesiaca,
+        palette.accent1,
+        (value) => formatNumber(value, 0),
+        { tooltip: true }
+      );
+      drawBarChart(
+        "chartWeekdayTrips",
+        dashboard.jazdy.charts.jazdy_podla_dna,
+        palette.accent4,
+        (value) => formatNumber(value, 0),
+        { tooltip: true }
+      );
       drawDonutChart(
         "chartTripDistance",
         dashboard.jazdy.charts.rozdelenie_podla_vzdialenosti,
         [palette.accent2, palette.accent1, palette.accent3, palette.accent4, "#9f7aea"]
       );
-      drawHorizontalBars("chartTopVehicles", dashboard.jazdy.charts.top_vozidla_podla_poctu_jazd, palette.accent1);
+      drawHorizontalBars(
+        "chartTopVehicles",
+        dashboard.jazdy.charts.top_vozidla_podla_poctu_jazd,
+        palette.accent1,
+        (value) => formatNumber(value, 0),
+        { tooltip: true }
+      );
     }
 
     function drawMaterialCharts() {
@@ -1898,6 +2327,7 @@ def build_html(dashboard: dict) -> str:
     }
 
     function drawActiveTab() {
+      hideChartTooltip();
       if (activeTab === "jazdy") {
         drawTripsCharts();
       } else if (activeTab === "material") {
@@ -1941,8 +2371,8 @@ def build_html(dashboard: dict) -> str:
 """
 
     html = template
-    html = html.replace("__HEADER_TOTAL__", escape(header_total))
     html = html.replace("__HEADER_SUB__", escape(header_sub))
+    html = html.replace("__HEADER_DATASET_CARDS__", header_cards)
     html = html.replace("__UNDERSTANDING_SECTION__", understanding_section)
     html = html.replace("__JAZDY_SECTION__", jazdy_section)
     html = html.replace("__MATERIAL_SECTION__", material_section)
@@ -1952,23 +2382,20 @@ def build_html(dashboard: dict) -> str:
 
 
 def main() -> None:
-    OUT_DIR.mkdir(parents=True, exist_ok=True)
     VIS_DIR.mkdir(parents=True, exist_ok=True)
 
-    jazdy = pd.read_csv(JAZDY_INPUT)
-    material = pd.read_csv(MATERIAL_INPUT)
+    jazdy = load_jazdy_dataset(JAZDY_INPUT)
+    material = load_material_dataset(MATERIAL_INPUT)
 
     dashboard = build_dashboard_data(jazdy, material)
-
-    with JSON_OUTPUT.open("w", encoding="utf-8") as handle:
-        json.dump(dashboard, handle, ensure_ascii=False, indent=2)
 
     html = build_html(dashboard)
     HTML_OUTPUT.write_text(html, encoding="utf-8")
 
-    print("Built dashboard artifacts:")
-    print(f"  {JSON_OUTPUT}")
-    print(f"  {HTML_OUTPUT}")
+    print("Built HTML dashboard:")
+    print(f"  source jazdy: {JAZDY_INPUT}")
+    print(f"  source material: {MATERIAL_INPUT}")
+    print(f"  output html: {HTML_OUTPUT}")
 
 
 if __name__ == "__main__":

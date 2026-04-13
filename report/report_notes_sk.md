@@ -92,11 +92,11 @@ Finalne vystupy boli znovu prepocitane skriptami nad raw Excel subormi a validov
 
 ## Validácia voči Tableau
 
-Pre Tableau boli pripravene dva cleaned CSV subory a samostatny subor `tableau_validation_metrics.csv`. V Tableau sa porovnavaju hlavne pocty zaznamov, pocty entit, priemerne mnozstva a zakladne hodnoty pre pokrocilejsiu analyzu. Ak sa nejaka hodnota lisi, kontroluje sa definicia metriky, filtre a typ pola.
+Pre Tableau boli pripravene dva cleaned CSV subory. Volitelne sa da dopocitat aj `tableau_validation_metrics.csv`, ale nie je nutny pre HTML cast zadania. V Tableau sa porovnavaju hlavne pocty zaznamov, pocty entit, priemerne mnozstva a zakladne hodnoty pre pokrocilejsiu analyzu. Ak sa nejaka hodnota lisi, kontroluje sa definicia metriky, filtre a typ pola.
 
 ## Porovnanie Tableau vs HTML/AI výstup
 
-HTML vystup je doplnkovy a je generovany z rovnakej Python pipeline ako validation CSV. Nepredstavuje povinnu cast zadania. Finalne a obhajitelne vysledky su tie, ktore sa daju zreprodukovat v Tableau po importe cleaned CSV suborov. Ak by sa HTML a Tableau lisili, prednost ma Tableau po kontrole definicie metriky.
+HTML vystup je doplnkovy a je generovany priamo zo zdrojovych Excel datasetov. Nepredstavuje povinnu cast zadania. Finalne a obhajitelne vysledky su tie, ktore sa daju zreprodukovat v Tableau po importe cleaned CSV suborov. Ak by sa HTML a Tableau lisili, prednost ma Tableau po kontrole definicie metriky.
 
 ## Čo AI navrhla a čo bolo po validácii potrebné opraviť
 

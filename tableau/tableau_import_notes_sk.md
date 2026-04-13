@@ -8,7 +8,8 @@ Importujte tieto subory z priecinka `outputs/`:
 
 - `cleaned_jazdy.csv`
 - `cleaned_material.csv`
-- `tableau_validation_metrics.csv`
+
+Volitelne si mozete dopocitat aj `tableau_validation_metrics.csv`, ale pre dashboardy nie je nutny.
 
 ## 2. Dashboard 1 - Jazdy vozidiel
 
@@ -79,9 +80,9 @@ Poznamka do komentara:
 
 - Povedzte, ze ide o analyzu pohybov materialu, nie o presny vypocet skladovych zasob.
 
-## 4. Co porovnat s validation CSV
+## 4. Co porovnat, ak si vytvorite validation CSV
 
-V `tableau_validation_metrics.csv` skontrolujte hlavne tieto hodnoty:
+Ak si spustite `python scripts/03_prepare_tableau_validation.py`, v `tableau_validation_metrics.csv` skontrolujte hlavne tieto hodnoty:
 
 - jazdy / `celkovy_pocet_zaznamov`
 - jazdy / `pocet_vozidiel`
