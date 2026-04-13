@@ -1,0 +1,1728 @@
+<!DOCTYPE html>
+<html lang="sk">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Analyza datasetov - HTML prehlad</title>
+  <style>
+    :root {
+      --bg: #f6f7f4;
+      --card: #ffffff;
+      --line: #d8ddd2;
+      --text: #1f2a1f;
+      --muted: #5c6758;
+      --accent: #315c3a;
+      --accent-soft: #dfeadf;
+      --warn: #8b5e34;
+      --warn-soft: #f4eadf;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: "Segoe UI", Arial, sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      line-height: 1.5;
+    }
+    header {
+      padding: 32px 20px 24px;
+      background: #eef3ea;
+      border-bottom: 1px solid var(--line);
+    }
+    header h1 {
+      margin: 0 0 8px;
+      font-size: 30px;
+    }
+    header p {
+      margin: 0;
+      max-width: 900px;
+      color: var(--muted);
+    }
+    nav {
+      padding: 12px 20px;
+      border-bottom: 1px solid var(--line);
+      background: #fbfcfa;
+    }
+    nav a {
+      color: var(--accent);
+      text-decoration: none;
+      margin-right: 16px;
+      font-weight: 600;
+    }
+    main {
+      max-width: 1180px;
+      margin: 0 auto;
+      padding: 20px;
+    }
+    section {
+      margin-bottom: 28px;
+    }
+    h2 {
+      margin: 0 0 12px;
+      font-size: 24px;
+    }
+    h3 {
+      margin: 0 0 14px;
+      font-size: 18px;
+    }
+    .section-note {
+      margin: 0 0 16px;
+      color: var(--muted);
+    }
+    .grid-2 {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
+      gap: 16px;
+    }
+    .grid-4 {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+      gap: 12px;
+    }
+    .card {
+      background: var(--card);
+      border: 1px solid var(--line);
+      border-radius: 12px;
+      padding: 18px;
+      box-shadow: 0 1px 1px rgba(0, 0, 0, 0.03);
+    }
+    .kpi-card {
+      background: var(--card);
+      border: 1px solid var(--line);
+      border-radius: 12px;
+      padding: 14px 16px;
+    }
+    .kpi-label {
+      color: var(--muted);
+      font-size: 13px;
+      margin-bottom: 8px;
+    }
+    .kpi-value {
+      font-size: 28px;
+      font-weight: 700;
+      color: var(--accent);
+    }
+    ul {
+      margin: 0;
+      padding-left: 18px;
+    }
+    li + li {
+      margin-top: 6px;
+    }
+    .bar-row {
+      display: grid;
+      grid-template-columns: 120px 1fr 92px;
+      gap: 10px;
+      align-items: center;
+      margin-bottom: 10px;
+    }
+    .bar-label, .bar-value {
+      font-size: 13px;
+    }
+    .bar-track {
+      background: #edf1ea;
+      border-radius: 999px;
+      height: 14px;
+      overflow: hidden;
+    }
+    .bar-fill {
+      height: 100%;
+      border-radius: 999px;
+      background: var(--accent);
+    }
+    .callout {
+      padding: 14px 16px;
+      border-radius: 10px;
+      background: var(--accent-soft);
+      border: 1px solid var(--line);
+    }
+    .callout.warn {
+      background: var(--warn-soft);
+      color: #593712;
+    }
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 14px;
+    }
+    th, td {
+      text-align: left;
+      padding: 10px 8px;
+      border-bottom: 1px solid var(--line);
+    }
+    th {
+      color: var(--muted);
+      font-weight: 600;
+    }
+    .meta {
+      margin-top: 12px;
+      color: var(--muted);
+      font-size: 13px;
+    }
+    code {
+      background: #eef1ec;
+      padding: 1px 5px;
+      border-radius: 4px;
+    }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>Analyza datasetov - doplnkovy HTML prehlad</h1>
+    <p>
+      Tento vystup je doplnok k povinnej Tableau casti. Zobrazuje iba metriky, ktore boli vygenerovane z aktualnych CSV
+      vystupov. Zaverecna validacia patri do Tableau.
+    </p>
+  </header>
+
+  <nav>
+    <a href="#pochopenie">Pochopenie dat</a>
+    <a href="#jazdy">Jazdy vozidiel</a>
+    <a href="#material">Zasobovanie materialmi</a>
+    <a href="#pokrocilejsia">Pokrocilejsia analytika</a>
+    <a href="#porovnanie">Porovnanie HTML vs Tableau</a>
+  </nav>
+
+  <main>
+    <section id="pochopenie">
+      <h2>Pochopenie dat</h2>
+      <p class="section-note">
+        Najprv treba presne povedat, co datasety obsahuju a co uz z nich bez dalsieho kontextu zistit nevieme.
+      </p>
+      <div class="grid-2">
+        <div class="card">
+          <h3>Dataset jazdy</h3>
+          <p>
+            Povodny Excel ma 11 601 riadkov a 14 povodnych poli.
+            Obdobie: 2024-01-02 az 2024-12-30.
+          </p>
+          <ul>
+            <li>Zakladne polia: datum, vozidlo, cas od/do, start a koniec polohy, doba statia, motohodiny, vzdialenost medzi startom a koncom.</li>
+            <li>Pre analyzu sa pouziva najma datum, vozidlo, trvanie jazdy, priama vzdialenost, flag near-zero a heuristicky flag potencialne neefektivneho zaznamu.</li>
+          </ul>
+          <div class="meta">Limity:</div>
+          <ul>
+            <li>DIST_START_END_M vyjadruje len priamu vzdialenost medzi startom a koncom, nie realnu trasu po cestach.</li><li>V datasete nie su adresy, dovod jazdy, naklady ani prepravovany material.</li><li>Surove suradnice mali zmiesany pocet cislic a museli sa standardizovat; 2 zaznamy ostali bez validnej startovacej polohy.</li><li>Cast zaznamov ma velmi maly posun, preto sa pri interpretacii oddeluju near-zero zaznamy od beznych jazd.</li>
+          </ul>
+        </div>
+        <div class="card">
+          <h3>Dataset material</h3>
+          <p>
+            Povodny Excel ma 644 106 riadkov a 4 povodne polia.
+            Obdobie: 2023-01-02 az 2025-12-19.
+          </p>
+          <ul>
+            <li>Zakladne polia: datum pohybu, rok, cislo materialu a mnozstvo.</li>
+            <li>Pre analyzu sa pouziva najma datum, prefix materialu, mnozstvo a ABC segment materialu.</li>
+          </ul>
+          <div class="meta">Limity:</div>
+          <ul>
+            <li>Dataset obsahuje pohyby materialu, nie presny stav skladu v case.</li><li>Nie je uvedeny smer pohybu, jednotka mnozstva ani cena materialu.</li><li>Materialovy prefix je odvodeny z prvych 8 znakov kodu materialu a sluzi len ako jednoducha skupina.</li>
+          </ul>
+        </div>
+      </div>
+      <div class="grid-2" style="margin-top: 16px;">
+        <div class="callout">
+          <strong>Co vieme zodpovedat:</strong> vytazenost vozidiel, vyvoj zaznamov v case, podiel near-zero zaznamov,
+          top vozidla, top prefixy materialov a ABC segmentaciu materialov.
+        </div>
+        <div class="callout warn">
+          <strong>Co netvrdime:</strong> presne trasy po cestach, financne uspory, stav zasob na sklade, adresy,
+          ani dovody jazd. Tieto informacie v datach nie su.
+        </div>
+      </div>
+    </section>
+
+    <section id="jazdy">
+      <h2>Jazdy vozidiel</h2>
+      <p class="section-note">Najviac jazd malo vozidlo SPZ26 (902), najmenej SPZ14 (341). Najsilnejsi den je St. Near-zero zaznamy tvoria 54.8 % vsetkych zaznamov, preto sa oplati pri Tableau dashboarde mat filter na tieto zaznamy.</p>
+      <div class="grid-4">
+        
+            <div class="kpi-card">
+              <div class="kpi-label">Celkovy pocet zaznamov</div>
+              <div class="kpi-value">11 601</div>
+            </div>
+            
+
+            <div class="kpi-card">
+              <div class="kpi-label">Pocet vozidiel</div>
+              <div class="kpi-value">18</div>
+            </div>
+            
+
+            <div class="kpi-card">
+              <div class="kpi-label">Platne jazdy (&gt; 50 m)</div>
+              <div class="kpi-value">5 248</div>
+            </div>
+            
+
+            <div class="kpi-card">
+              <div class="kpi-label">Near-zero zaznamy</div>
+              <div class="kpi-value">6 353</div>
+            </div>
+            
+
+            <div class="kpi-card">
+              <div class="kpi-label">Priemer km na platnu jazdu</div>
+              <div class="kpi-value">12,39</div>
+            </div>
+            
+
+            <div class="kpi-card">
+              <div class="kpi-label">Median km na platnu jazdu</div>
+              <div class="kpi-value">2,11</div>
+            </div>
+            
+      </div>
+      <div class="grid-2" style="margin-top: 16px;">
+        
+    <div class="card">
+      <h3>Pocet zaznamov podla mesiaca</h3>
+      <div class="bar-chart">
+        
+            <div class="bar-row">
+              <div class="bar-label">01/2024</div>
+              <div class="bar-track"><div class="bar-fill" style="width: 74.42%"></div></div>
+              <div class="bar-value">841</div>
+            </div>
+            
+            <div class="bar-row">
+              <div class="bar-label">02/2024</div>
+              <div class="bar-track"><div class="bar-fill" style="width: 79.73%"></div></div>
+              <div class="bar-value">901</div>
+            </div>
+            
+            <div class="bar-row">
+              <div class="bar-label">03/2024</div>
+              <div class="bar-track"><div class="bar-fill" style="width: 87.61%"></div></div>
+              <div class="bar-value">990</div>
+            </div>
+            
+            <div class="bar-row">
+              <div class="bar-label">04/2024</div>
+              <div class="bar-track"><div class="bar-fill" style="width: 88.76%"></div></div>
+              <div class="bar-value">1 003</div>
+            </div>
+            
+            <div class="bar-row">
+              <div class="bar-label">05/2024</div>
+              <div class="bar-track"><div class="bar-fill" style="width: 98.76%"></div></div>
+              <div class="bar-value">1 116</div>
+            </div>
+            
+            <div class="bar-row">
+              <div class="bar-label">06/2024</div>
+              <div class="bar-track"><div class="bar-fill" style="width: 85.13%"></div></div>
+              <div class="bar-value">962</div>
+            </div>
+            
+            <div class="bar-row">
+              <div class="bar-label">07/2024</div>
+              <div class="bar-track"><div class="bar-fill" style="width: 87.43%"></div></div>
+              <div class="bar-value">988</div>
+            </div>
+            
+            <div class="bar-row">
+              <div class="bar-label">08/2024</div>
+              <div class="bar-track"><div class="bar-fill" style="width: 87.79%"></div></div>
+              <div class="bar-value">992</div>
+            </div>
+            
+            <div class="bar-row">
+              <div class="bar-label">09/2024</div>
+              <div class="bar-track"><div class="bar-fill" style="width: 88.05%"></div></div>
+              <div class="bar-value">995</div>
+            </div>
+            
+            <div class="bar-row">
+              <div class="bar-label">10/2024</div>
+              <div class="bar-track"><div class="bar-fill" style="width: 100.00%"></div></div>
+              <div class="bar-value">1 130</div>
+            </div>
+            
+            <div class="bar-row">
+              <div class="bar-label">11/2024</div>
+              <div class="bar-track"><div class="bar-fill" style="width: 90.35%"></div></div>
+              <div class="bar-value">1 021</div>
+            </div>
+            
+            <div class="bar-row">
+              <div class="bar-label">12/2024</div>
+              <div class="bar-track"><div class="bar-fill" style="width: 58.58%"></div></div>
+              <div class="bar-value">662</div>
+            </div>
+            
+      </div>
+    </div>
+    
+        
+    <div class="card">
+      <h3>Pocet zaznamov podla dna v tyzdni</h3>
+      <div class="bar-chart">
+        
+            <div class="bar-row">
+              <div class="bar-label">Po</div>
+              <div class="bar-track"><div class="bar-fill" style="width: 88.35%"></div></div>
+              <div class="bar-value">2 078</div>
+            </div>
+            
+            <div class="bar-row">
+              <div class="bar-label">Ut</div>
+              <div class="bar-track"><div class="bar-fill" style="width: 85.88%"></div></div>
+              <div class="bar-value">2 020</div>
+            </div>
+            
+            <div class="bar-row">
+              <div class="bar-label">St</div>
+              <div class="bar-track"><div class="bar-fill" style="width: 100.00%"></div></div>
+              <div class="bar-value">2 352</div>
+            </div>
+            
+            <div class="bar-row">
+              <div class="bar-label">Stv</div>
+              <div class="bar-track"><div class="bar-fill" style="width: 90.22%"></div></div>
+              <div class="bar-value">2 122</div>
+            </div>
+            
+            <div class="bar-row">
+              <div class="bar-label">Pi</div>
+              <div class="bar-track"><div class="bar-fill" style="width: 69.13%"></div></div>
+              <div class="bar-value">1 626</div>
+            </div>
+            
+            <div class="bar-row">
+              <div class="bar-label">So</div>
+              <div class="bar-track"><div class="bar-fill" style="width: 28.32%"></div></div>
+              <div class="bar-value">666</div>
+            </div>
+            
+            <div class="bar-row">
+              <div class="bar-label">Ne</div>
+              <div class="bar-track"><div class="bar-fill" style="width: 31.34%"></div></div>
+              <div class="bar-value">737</div>
+            </div>
+            
+      </div>
+    </div>
+    
+      </div>
+      <div class="grid-2" style="margin-top: 16px;">
+        
+    <div class="card">
+      <h3>Top vozidla podla poctu zaznamov</h3>
+      <div class="bar-chart">
+        
+            <div class="bar-row">
+              <div class="bar-label">SPZ26</div>
+              <div class="bar-track"><div class="bar-fill" style="width: 100.00%"></div></div>
+              <div class="bar-value">902</div>
+            </div>
+            
+            <div class="bar-row">
+              <div class="bar-label">SPZ24</div>
+              <div class="bar-track"><div class="bar-fill" style="width: 97.01%"></div></div>
+              <div class="bar-value">875</div>
+            </div>
+            
+            <div class="bar-row">
+              <div class="bar-label">SPZ36</div>
+              <div class="bar-track"><div class="bar-fill" style="width: 92.02%"></div></div>
+              <div class="bar-value">830</div>
+            </div>
+            
+            <div class="bar-row">
+              <div class="bar-label">SPZ32</div>
+              <div class="bar-track"><div class="bar-fill" style="width: 82.59%"></div></div>
+              <div class="bar-value">745</div>
+            </div>
+            
+            <div class="bar-row">
+              <div class="bar-label">SPZ35</div>
+              <div class="bar-track"><div class="bar-fill" style="width: 80.49%"></div></div>
+              <div class="bar-value">726</div>
+            </div>
+            
+            <div class="bar-row">
+              <div class="bar-label">SPZ15</div>
+              <div class="bar-track"><div class="bar-fill" style="width: 80.04%"></div></div>
+              <div class="bar-value">722</div>
+            </div>
+            
+            <div class="bar-row">
+              <div class="bar-label">SPZ22</div>
+              <div class="bar-track"><div class="bar-fill" style="width: 79.16%"></div></div>
+              <div class="bar-value">714</div>
+            </div>
+            
+            <div class="bar-row">
+              <div class="bar-label">SPZ28</div>
+              <div class="bar-track"><div class="bar-fill" style="width: 78.38%"></div></div>
+              <div class="bar-value">707</div>
+            </div>
+            
+      </div>
+    </div>
+    
+        
+    <div class="card">
+      <h3>Rozdelenie podla priamej vzdialenosti</h3>
+      <div class="bar-chart">
+        
+            <div class="bar-row">
+              <div class="bar-label">&lt; 0,05 km</div>
+              <div class="bar-track"><div class="bar-fill" style="width: 100.00%"></div></div>
+              <div class="bar-value">6 353</div>
+            </div>
+            
+            <div class="bar-row">
+              <div class="bar-label">0,05 - 0,5 km</div>
+              <div class="bar-track"><div class="bar-fill" style="width: 27.23%"></div></div>
+              <div class="bar-value">1 730</div>
+            </div>
+            
+            <div class="bar-row">
+              <div class="bar-label">0,5 - 5 km</div>
+              <div class="bar-track"><div class="bar-fill" style="width: 19.74%"></div></div>
+              <div class="bar-value">1 254</div>
+            </div>
+            
+            <div class="bar-row">
+              <div class="bar-label">5 - 20 km</div>
+              <div class="bar-track"><div class="bar-fill" style="width: 14.12%"></div></div>
+              <div class="bar-value">897</div>
+            </div>
+            
+            <div class="bar-row">
+              <div class="bar-label">20+ km</div>
+              <div class="bar-track"><div class="bar-fill" style="width: 21.52%"></div></div>
+              <div class="bar-value">1 367</div>
+            </div>
+            
+      </div>
+    </div>
+    
+      </div>
+    </section>
+
+    <section id="material">
+      <h2>Zasobovanie materialmi</h2>
+      <p class="section-note">Najaktivnejsi prefix podla poctu pohybov je MAT07111 (273548 pohybov). Interpretacia je o pohyboch materialu, nie o presnom stave skladu, preto sa v texte ani vo vizualizaciach nehovori o zasobach na sklade.</p>
+      <div class="grid-4">
+        
+            <div class="kpi-card">
+              <div class="kpi-label">Celkovy pocet pohybov</div>
+              <div class="kpi-value">644 106</div>
+            </div>
+            
+
+            <div class="kpi-card">
+              <div class="kpi-label">Pocet materialov</div>
+              <div class="kpi-value">690</div>
+            </div>
+            
+
+            <div class="kpi-card">
+              <div class="kpi-label">Pocet prefixov</div>
+              <div class="kpi-value">26</div>
+            </div>
+            
+
+            <div class="kpi-card">
+              <div class="kpi-label">Celkove mnozstvo</div>
+              <div class="kpi-value">177 585 193</div>
+            </div>
+            
+
+            <div class="kpi-card">
+              <div class="kpi-label">Priemerne mnozstvo</div>
+              <div class="kpi-value">275,7</div>
+            </div>
+            
+
+            <div class="kpi-card">
+              <div class="kpi-label">Median mnozstva</div>
+              <div class="kpi-value">9</div>
+            </div>
+            
+      </div>
+      <div class="grid-2" style="margin-top: 16px;">
+        
+    <div class="card">
+      <h3>Pohyby materialu podla mesiaca</h3>
+      <div class="bar-chart">
+        
+            <div class="bar-row">
+              <div class="bar-label">01/2023</div>
+              <div class="bar-track"><div class="bar-fill" style="width: 63.67%"></div></div>
+              <div class="bar-value">15 607</div>
+            </div>
+            
+            <div class="bar-row">
+              <div class="bar-label">02/2023</div>
+              <div class="bar-track"><div class="bar-fill" style="width: 72.55%"></div></div>
+              <div class="bar-value">17 784</div>
+            </div>
+            
+            <div class="bar-row">
+              <div class="bar-label">03/2023</div>
+              <div class="bar-track"><div class="bar-fill" style="width: 71.41%"></div></div>
+              <div class="bar-value">17 506</div>
+            </div>
+            
+            <div class="bar-row">
+              <div class="bar-label">04/2023</div>
+              <div class="bar-track"><div class="bar-fill" style="width: 78.58%"></div></div>
+              <div class="bar-value">19 262</div>
+            </div>
+            
+            <div class="bar-row">
+              <div class="bar-label">05/2023</div>
+              <div class="bar-track"><div class="bar-fill" style="width: 63.33%"></div></div>
+              <div class="bar-value">15 525</div>
+            </div>
+            
+            <div class="bar-row">
+              <div class="bar-label">06/2023</div>
+              <div class="bar-track"><div class="bar-fill" style="width: 90.08%"></div></div>
+              <div class="bar-value">22 083</div>
+            </div>
+            
+            <div class="bar-row">
+              <div class="bar-label">07/2023</div>
+              <div class="bar-track"><div class="bar-fill" style="width: 50.64%"></div></div>
+              <div class="bar-value">12 414</div>
+            </div>
+            
+            <div class="bar-row">
+              <div class="bar-label">08/2023</div>
+              <div class="bar-track"><div class="bar-fill" style="width: 84.69%"></div></div>
+              <div class="bar-value">20 760</div>
+            </div>
+            
+            <div class="bar-row">
+              <div class="bar-label">09/2023</div>
+              <div class="bar-track"><div class="bar-fill" style="width: 68.69%"></div></div>
+              <div class="bar-value">16 839</div>
+            </div>
+            
+            <div class="bar-row">
+              <div class="bar-label">10/2023</div>
+              <div class="bar-track"><div class="bar-fill" style="width: 89.71%"></div></div>
+              <div class="bar-value">21 991</div>
+            </div>
+            
+            <div class="bar-row">
+              <div class="bar-label">11/2023</div>
+              <div class="bar-track"><div class="bar-fill" style="width: 84.23%"></div></div>
+              <div class="bar-value">20 648</div>
+            </div>
+            
+            <div class="bar-row">
+              <div class="bar-label">12/2023</div>
+              <div class="bar-track"><div class="bar-fill" style="width: 57.67%"></div></div>
+              <div class="bar-value">14 137</div>
+            </div>
+            
+            <div class="bar-row">
+              <div class="bar-label">01/2024</div>
+              <div class="bar-track"><div class="bar-fill" style="width: 77.27%"></div></div>
+              <div class="bar-value">18 943</div>
+            </div>
+            
+            <div class="bar-row">
+              <div class="bar-label">02/2024</div>
+              <div class="bar-track"><div class="bar-fill" style="width: 69.58%"></div></div>
+              <div class="bar-value">17 058</div>
+            </div>
+            
+            <div class="bar-row">
+              <div class="bar-label">03/2024</div>
+              <div class="bar-track"><div class="bar-fill" style="width: 65.15%"></div></div>
+              <div class="bar-value">15 972</div>
+            </div>
+            
+            <div class="bar-row">
+              <div class="bar-label">04/2024</div>
+              <div class="bar-track"><div class="bar-fill" style="width: 84.14%"></div></div>
+              <div class="bar-value">20 626</div>
+            </div>
+            
+            <div class="bar-row">
+              <div class="bar-label">05/2024</div>
+              <div class="bar-track"><div class="bar-fill" style="width: 100.00%"></div></div>
+              <div class="bar-value">24 514</div>
+            </div>
+            
+            <div class="bar-row">
+              <div class="bar-label">06/2024</div>
+              <div class="bar-track"><div class="bar-fill" style="width: 75.14%"></div></div>
+              <div class="bar-value">18 419</div>
+            </div>
+            
+            <div class="bar-row">
+              <div class="bar-label">07/2024</div>
+              <div class="bar-track"><div class="bar-fill" style="width: 76.48%"></div></div>
+              <div class="bar-value">18 749</div>
+            </div>
+            
+            <div class="bar-row">
+              <div class="bar-label">08/2024</div>
+              <div class="bar-track"><div class="bar-fill" style="width: 77.07%"></div></div>
+              <div class="bar-value">18 894</div>
+            </div>
+            
+            <div class="bar-row">
+              <div class="bar-label">09/2024</div>
+              <div class="bar-track"><div class="bar-fill" style="width: 75.54%"></div></div>
+              <div class="bar-value">18 517</div>
+            </div>
+            
+            <div class="bar-row">
+              <div class="bar-label">10/2024</div>
+              <div class="bar-track"><div class="bar-fill" style="width: 73.45%"></div></div>
+              <div class="bar-value">18 006</div>
+            </div>
+            
+            <div class="bar-row">
+              <div class="bar-label">11/2024</div>
+              <div class="bar-track"><div class="bar-fill" style="width: 90.41%"></div></div>
+              <div class="bar-value">22 162</div>
+            </div>
+            
+            <div class="bar-row">
+              <div class="bar-label">12/2024</div>
+              <div class="bar-track"><div class="bar-fill" style="width: 64.82%"></div></div>
+              <div class="bar-value">15 889</div>
+            </div>
+            
+            <div class="bar-row">
+              <div class="bar-label">01/2025</div>
+              <div class="bar-track"><div class="bar-fill" style="width: 72.73%"></div></div>
+              <div class="bar-value">17 830</div>
+            </div>
+            
+            <div class="bar-row">
+              <div class="bar-label">02/2025</div>
+              <div class="bar-track"><div class="bar-fill" style="width: 63.69%"></div></div>
+              <div class="bar-value">15 613</div>
+            </div>
+            
+            <div class="bar-row">
+              <div class="bar-label">03/2025</div>
+              <div class="bar-track"><div class="bar-fill" style="width: 87.86%"></div></div>
+              <div class="bar-value">21 538</div>
+            </div>
+            
+            <div class="bar-row">
+              <div class="bar-label">04/2025</div>
+              <div class="bar-track"><div class="bar-fill" style="width: 67.88%"></div></div>
+              <div class="bar-value">16 639</div>
+            </div>
+            
+            <div class="bar-row">
+              <div class="bar-label">05/2025</div>
+              <div class="bar-track"><div class="bar-fill" style="width: 60.39%"></div></div>
+              <div class="bar-value">14 805</div>
+            </div>
+            
+            <div class="bar-row">
+              <div class="bar-label">06/2025</div>
+              <div class="bar-track"><div class="bar-fill" style="width: 70.49%"></div></div>
+              <div class="bar-value">17 279</div>
+            </div>
+            
+            <div class="bar-row">
+              <div class="bar-label">07/2025</div>
+              <div class="bar-track"><div class="bar-fill" style="width: 67.48%"></div></div>
+              <div class="bar-value">16 541</div>
+            </div>
+            
+            <div class="bar-row">
+              <div class="bar-label">08/2025</div>
+              <div class="bar-track"><div class="bar-fill" style="width: 60.88%"></div></div>
+              <div class="bar-value">14 925</div>
+            </div>
+            
+            <div class="bar-row">
+              <div class="bar-label">09/2025</div>
+              <div class="bar-track"><div class="bar-fill" style="width: 79.14%"></div></div>
+              <div class="bar-value">19 400</div>
+            </div>
+            
+            <div class="bar-row">
+              <div class="bar-label">10/2025</div>
+              <div class="bar-track"><div class="bar-fill" style="width: 69.42%"></div></div>
+              <div class="bar-value">17 018</div>
+            </div>
+            
+            <div class="bar-row">
+              <div class="bar-label">11/2025</div>
+              <div class="bar-track"><div class="bar-fill" style="width: 71.41%"></div></div>
+              <div class="bar-value">17 505</div>
+            </div>
+            
+            <div class="bar-row">
+              <div class="bar-label">12/2025</div>
+              <div class="bar-track"><div class="bar-fill" style="width: 51.84%"></div></div>
+              <div class="bar-value">12 708</div>
+            </div>
+            
+      </div>
+    </div>
+    
+        
+    <div class="card">
+      <h3>Celkove mnozstvo podla mesiaca</h3>
+      <div class="bar-chart">
+        
+            <div class="bar-row">
+              <div class="bar-label">01/2023</div>
+              <div class="bar-track"><div class="bar-fill" style="width: 25.73%"></div></div>
+              <div class="bar-value">3 823 686,4</div>
+            </div>
+            
+            <div class="bar-row">
+              <div class="bar-label">02/2023</div>
+              <div class="bar-track"><div class="bar-fill" style="width: 36.86%"></div></div>
+              <div class="bar-value">5 478 163,8</div>
+            </div>
+            
+            <div class="bar-row">
+              <div class="bar-label">03/2023</div>
+              <div class="bar-track"><div class="bar-fill" style="width: 30.42%"></div></div>
+              <div class="bar-value">4 520 633,0</div>
+            </div>
+            
+            <div class="bar-row">
+              <div class="bar-label">04/2023</div>
+              <div class="bar-track"><div class="bar-fill" style="width: 29.12%"></div></div>
+              <div class="bar-value">4 327 146,3</div>
+            </div>
+            
+            <div class="bar-row">
+              <div class="bar-label">05/2023</div>
+              <div class="bar-track"><div class="bar-fill" style="width: 20.17%"></div></div>
+              <div class="bar-value">2 997 929,1</div>
+            </div>
+            
+            <div class="bar-row">
+              <div class="bar-label">06/2023</div>
+              <div class="bar-track"><div class="bar-fill" style="width: 68.59%"></div></div>
+              <div class="bar-value">10 192 120,3</div>
+            </div>
+            
+            <div class="bar-row">
+              <div class="bar-label">07/2023</div>
+              <div class="bar-track"><div class="bar-fill" style="width: 25.58%"></div></div>
+              <div class="bar-value">3 801 198,5</div>
+            </div>
+            
+            <div class="bar-row">
+              <div class="bar-label">08/2023</div>
+              <div class="bar-track"><div class="bar-fill" style="width: 25.77%"></div></div>
+              <div class="bar-value">3 829 967,4</div>
+            </div>
+            
+            <div class="bar-row">
+              <div class="bar-label">09/2023</div>
+              <div class="bar-track"><div class="bar-fill" style="width: 29.88%"></div></div>
+              <div class="bar-value">4 440 291,3</div>
+            </div>
+            
+            <div class="bar-row">
+              <div class="bar-label">10/2023</div>
+              <div class="bar-track"><div class="bar-fill" style="width: 37.48%"></div></div>
+              <div class="bar-value">5 569 909,3</div>
+            </div>
+            
+            <div class="bar-row">
+              <div class="bar-label">11/2023</div>
+              <div class="bar-track"><div class="bar-fill" style="width: 28.51%"></div></div>
+              <div class="bar-value">4 236 907,8</div>
+            </div>
+            
+            <div class="bar-row">
+              <div class="bar-label">12/2023</div>
+              <div class="bar-track"><div class="bar-fill" style="width: 22.75%"></div></div>
+              <div class="bar-value">3 381 396,7</div>
+            </div>
+            
+            <div class="bar-row">
+              <div class="bar-label">01/2024</div>
+              <div class="bar-track"><div class="bar-fill" style="width: 26.65%"></div></div>
+              <div class="bar-value">3 959 627,3</div>
+            </div>
+            
+            <div class="bar-row">
+              <div class="bar-label">02/2024</div>
+              <div class="bar-track"><div class="bar-fill" style="width: 22.11%"></div></div>
+              <div class="bar-value">3 285 653,0</div>
+            </div>
+            
+            <div class="bar-row">
+              <div class="bar-label">03/2024</div>
+              <div class="bar-track"><div class="bar-fill" style="width: 28.33%"></div></div>
+              <div class="bar-value">4 210 198,1</div>
+            </div>
+            
+            <div class="bar-row">
+              <div class="bar-label">04/2024</div>
+              <div class="bar-track"><div class="bar-fill" style="width: 28.10%"></div></div>
+              <div class="bar-value">4 176 014,2</div>
+            </div>
+            
+            <div class="bar-row">
+              <div class="bar-label">05/2024</div>
+              <div class="bar-track"><div class="bar-fill" style="width: 32.51%"></div></div>
+              <div class="bar-value">4 830 601,6</div>
+            </div>
+            
+            <div class="bar-row">
+              <div class="bar-label">06/2024</div>
+              <div class="bar-track"><div class="bar-fill" style="width: 28.74%"></div></div>
+              <div class="bar-value">4 271 110,7</div>
+            </div>
+            
+            <div class="bar-row">
+              <div class="bar-label">07/2024</div>
+              <div class="bar-track"><div class="bar-fill" style="width: 29.86%"></div></div>
+              <div class="bar-value">4 438 020,9</div>
+            </div>
+            
+            <div class="bar-row">
+              <div class="bar-label">08/2024</div>
+              <div class="bar-track"><div class="bar-fill" style="width: 47.58%"></div></div>
+              <div class="bar-value">7 070 982,1</div>
+            </div>
+            
+            <div class="bar-row">
+              <div class="bar-label">09/2024</div>
+              <div class="bar-track"><div class="bar-fill" style="width: 29.66%"></div></div>
+              <div class="bar-value">4 407 621,0</div>
+            </div>
+            
+            <div class="bar-row">
+              <div class="bar-label">10/2024</div>
+              <div class="bar-track"><div class="bar-fill" style="width: 33.26%"></div></div>
+              <div class="bar-value">4 943 206,5</div>
+            </div>
+            
+            <div class="bar-row">
+              <div class="bar-label">11/2024</div>
+              <div class="bar-track"><div class="bar-fill" style="width: 100.00%"></div></div>
+              <div class="bar-value">14 860 462,0</div>
+            </div>
+            
+            <div class="bar-row">
+              <div class="bar-label">12/2024</div>
+              <div class="bar-track"><div class="bar-fill" style="width: 32.41%"></div></div>
+              <div class="bar-value">4 816 259,5</div>
+            </div>
+            
+            <div class="bar-row">
+              <div class="bar-label">01/2025</div>
+              <div class="bar-track"><div class="bar-fill" style="width: 25.83%"></div></div>
+              <div class="bar-value">3 838 995,1</div>
+            </div>
+            
+            <div class="bar-row">
+              <div class="bar-label">02/2025</div>
+              <div class="bar-track"><div class="bar-fill" style="width: 29.06%"></div></div>
+              <div class="bar-value">4 318 182,2</div>
+            </div>
+            
+            <div class="bar-row">
+              <div class="bar-label">03/2025</div>
+              <div class="bar-track"><div class="bar-fill" style="width: 34.94%"></div></div>
+              <div class="bar-value">5 191 899,2</div>
+            </div>
+            
+            <div class="bar-row">
+              <div class="bar-label">04/2025</div>
+              <div class="bar-track"><div class="bar-fill" style="width: 29.19%"></div></div>
+              <div class="bar-value">4 337 430,0</div>
+            </div>
+            
+            <div class="bar-row">
+              <div class="bar-label">05/2025</div>
+              <div class="bar-track"><div class="bar-fill" style="width: 24.29%"></div></div>
+              <div class="bar-value">3 609 948,3</div>
+            </div>
+            
+            <div class="bar-row">
+              <div class="bar-label">06/2025</div>
+              <div class="bar-track"><div class="bar-fill" style="width: 30.91%"></div></div>
+              <div class="bar-value">4 593 243,0</div>
+            </div>
+            
+            <div class="bar-row">
+              <div class="bar-label">07/2025</div>
+              <div class="bar-track"><div class="bar-fill" style="width: 28.75%"></div></div>
+              <div class="bar-value">4 273 112,2</div>
+            </div>
+            
+            <div class="bar-row">
+              <div class="bar-label">08/2025</div>
+              <div class="bar-track"><div class="bar-fill" style="width: 28.56%"></div></div>
+              <div class="bar-value">4 243 907,4</div>
+            </div>
+            
+            <div class="bar-row">
+              <div class="bar-label">09/2025</div>
+              <div class="bar-track"><div class="bar-fill" style="width: 40.36%"></div></div>
+              <div class="bar-value">5 997 463,3</div>
+            </div>
+            
+            <div class="bar-row">
+              <div class="bar-label">10/2025</div>
+              <div class="bar-track"><div class="bar-fill" style="width: 36.17%"></div></div>
+              <div class="bar-value">5 375 715,8</div>
+            </div>
+            
+            <div class="bar-row">
+              <div class="bar-label">11/2025</div>
+              <div class="bar-track"><div class="bar-fill" style="width: 33.50%"></div></div>
+              <div class="bar-value">4 978 159,1</div>
+            </div>
+            
+            <div class="bar-row">
+              <div class="bar-label">12/2025</div>
+              <div class="bar-track"><div class="bar-fill" style="width: 33.36%"></div></div>
+              <div class="bar-value">4 958 030,3</div>
+            </div>
+            
+      </div>
+    </div>
+    
+      </div>
+      <div class="grid-2" style="margin-top: 16px;">
+        
+    <div class="card">
+      <h3>Top prefixy podla poctu pohybov</h3>
+      <div class="bar-chart">
+        
+            <div class="bar-row">
+              <div class="bar-label">MAT07111</div>
+              <div class="bar-track"><div class="bar-fill" style="width: 100.00%"></div></div>
+              <div class="bar-value">273 548</div>
+            </div>
+            
+            <div class="bar-row">
+              <div class="bar-label">MAT07110</div>
+              <div class="bar-track"><div class="bar-fill" style="width: 39.76%"></div></div>
+              <div class="bar-value">108 754</div>
+            </div>
+            
+            <div class="bar-row">
+              <div class="bar-label">MAT07697</div>
+              <div class="bar-track"><div class="bar-fill" style="width: 21.58%"></div></div>
+              <div class="bar-value">59 033</div>
+            </div>
+            
+            <div class="bar-row">
+              <div class="bar-label">MAT07309</div>
+              <div class="bar-track"><div class="bar-fill" style="width: 18.40%"></div></div>
+              <div class="bar-value">50 332</div>
+            </div>
+            
+            <div class="bar-row">
+              <div class="bar-label">MAT07711</div>
+              <div class="bar-track"><div class="bar-fill" style="width: 11.82%"></div></div>
+              <div class="bar-value">32 345</div>
+            </div>
+            
+            <div class="bar-row">
+              <div class="bar-label">MAT07107</div>
+              <div class="bar-track"><div class="bar-fill" style="width: 10.29%"></div></div>
+              <div class="bar-value">28 155</div>
+            </div>
+            
+            <div class="bar-row">
+              <div class="bar-label">MAT07607</div>
+              <div class="bar-track"><div class="bar-fill" style="width: 7.25%"></div></div>
+              <div class="bar-value">19 820</div>
+            </div>
+            
+            <div class="bar-row">
+              <div class="bar-label">MAT07565</div>
+              <div class="bar-track"><div class="bar-fill" style="width: 6.73%"></div></div>
+              <div class="bar-value">18 409</div>
+            </div>
+            
+      </div>
+    </div>
+    
+        
+    <div class="card">
+      <h3>ABC segmenty podla poctu materialov</h3>
+      <div class="bar-chart">
+        
+            <div class="bar-row">
+              <div class="bar-label">A</div>
+              <div class="bar-track"><div class="bar-fill" style="width: 5.44%"></div></div>
+              <div class="bar-value">32</div>
+            </div>
+            
+            <div class="bar-row">
+              <div class="bar-label">B</div>
+              <div class="bar-track"><div class="bar-fill" style="width: 11.90%"></div></div>
+              <div class="bar-value">70</div>
+            </div>
+            
+            <div class="bar-row">
+              <div class="bar-label">C</div>
+              <div class="bar-track"><div class="bar-fill" style="width: 100.00%"></div></div>
+              <div class="bar-value">588</div>
+            </div>
+            
+      </div>
+    </div>
+    
+      </div>
+    </section>
+
+    <section id="pokrocilejsia">
+      <h2>Pokrocilejsia analytika</h2>
+      <div class="grid-2">
+        <div class="card">
+          <h3>Jazdy: potencialne neefektivne zaznamy</h3>
+          <p>Heuristika oznacuje zaznamy s trvanim aspon 30 minut a so zmenou polohy pod 0,5 km. Ide len o signal na kontrolu, nie o dokazanu neefektivitu.</p>
+          <p>
+            Pocet heuristicky oznacenych zaznamov:
+            <strong>308</strong>.
+          </p>
+          
+    <h3>Vozidla s najvyssim podielom oznacenych zaznamov</h3>
+    <table>
+      <thead><tr><th>Vozidlo</th><th>Vsetky zaznamy</th><th>Oznacene</th><th>Podiel</th></tr></thead>
+      <tbody><tr><td>SPZ14</td><td>341</td><td>35</td><td>10,3 %</td></tr><tr><td>SPZ27</td><td>610</td><td>38</td><td>6,2 %</td></tr><tr><td>SPZ28</td><td>707</td><td>36</td><td>5,1 %</td></tr><tr><td>SPZ33</td><td>498</td><td>20</td><td>4,0 %</td></tr><tr><td>SPZ11</td><td>423</td><td>16</td><td>3,8 %</td></tr></tbody>
+    </table>
+    
+        </div>
+        <div class="card">
+          <h3>Material: ABC segmentacia</h3>
+          <p>Pouzita je jednoducha ABC segmentacia podla kumulativneho podielu na celkovom mnozstve. Je interpretovatelnejsia ako clustering a lepsie sa obhajuje v studentskom projekte.</p>
+          
+    <h3>Pocet unikatnych materialov v segmentoch</h3>
+    <table>
+      <thead><tr><th>ABC segment</th><th>Pocet materialov</th></tr></thead>
+      <tbody><tr><td>A</td><td>32</td></tr><tr><td>B</td><td>70</td></tr><tr><td>C</td><td>588</td></tr></tbody>
+    </table>
+    
+          <div class="meta">
+            Segmentacia je zalozena na kumulativnom podiele na celkovom mnozstve pohybov, nie na cene a nie na skladovej hodnote.
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section id="porovnanie">
+      <h2>Kratke porovnanie HTML/AI vs Tableau validation</h2>
+      <div class="card">
+        <p>HTML je doplnkovy artefakt postaveny na tych istych CSV. Ak sa cisla v HTML a Tableau lisia, najprv treba skontrolovat filtre, typy datumov a rozdiel medzi COUNT a COUNTD. Pri finalnej obhajobe ma prednost validacia v Tableau.</p>
+        <ul>
+          <li>HTML je len doplnok a vznikol z dat v <code>outputs/dashboard_data.json</code>.</li>
+          <li>Tableau je povinna cast zadania a ma sluzit na finalnu kontrolu KPI aj grafov.</li>
+          <li>Ak sa vysledky lisia, do spravy patri vysvetlenie rozdielu a odkaz na validaciu v Tableau.</li>
+        </ul>
+      </div>
+    </section>
+  </main>
+
+  <script id="dashboard-data" type="application/json">{
+  "meta": {
+    "generated_from": "outputs/dashboard_data.json",
+    "html_role": "Doplnkovy HTML vystup. Finalna validacia patri do Tableau."
+  },
+  "pochopenie_dat": {
+    "jazdy": {
+      "record_count": 11601,
+      "field_count": 14,
+      "date_range": [
+        "2024-01-02",
+        "2024-12-30"
+      ],
+      "limitations": [
+        "DIST_START_END_M vyjadruje len priamu vzdialenost medzi startom a koncom, nie realnu trasu po cestach.",
+        "V datasete nie su adresy, dovod jazdy, naklady ani prepravovany material.",
+        "Surove suradnice mali zmiesany pocet cislic a museli sa standardizovat; 2 zaznamy ostali bez validnej startovacej polohy.",
+        "Cast zaznamov ma velmi maly posun, preto sa pri interpretacii oddeluju near-zero zaznamy od beznych jazd."
+      ]
+    },
+    "material": {
+      "record_count": 644106,
+      "field_count": 4,
+      "date_range": [
+        "2023-01-02",
+        "2025-12-19"
+      ],
+      "limitations": [
+        "Dataset obsahuje pohyby materialu, nie presny stav skladu v case.",
+        "Nie je uvedeny smer pohybu, jednotka mnozstva ani cena materialu.",
+        "Materialovy prefix je odvodeny z prvych 8 znakov kodu materialu a sluzi len ako jednoducha skupina."
+      ]
+    }
+  },
+  "jazdy": {
+    "kpi": {
+      "Celkovy pocet zaznamov": 11601,
+      "Pocet vozidiel": 18,
+      "Platne jazdy (> 50 m)": 5248,
+      "Near-zero zaznamy": 6353,
+      "Priemer km na platnu jazdu": 12.39,
+      "Median km na platnu jazdu": 2.11
+    },
+    "charts": {
+      "jazdy_podla_mesiaca": [
+        {
+          "label": "01/2024",
+          "value": 841
+        },
+        {
+          "label": "02/2024",
+          "value": 901
+        },
+        {
+          "label": "03/2024",
+          "value": 990
+        },
+        {
+          "label": "04/2024",
+          "value": 1003
+        },
+        {
+          "label": "05/2024",
+          "value": 1116
+        },
+        {
+          "label": "06/2024",
+          "value": 962
+        },
+        {
+          "label": "07/2024",
+          "value": 988
+        },
+        {
+          "label": "08/2024",
+          "value": 992
+        },
+        {
+          "label": "09/2024",
+          "value": 995
+        },
+        {
+          "label": "10/2024",
+          "value": 1130
+        },
+        {
+          "label": "11/2024",
+          "value": 1021
+        },
+        {
+          "label": "12/2024",
+          "value": 662
+        }
+      ],
+      "jazdy_podla_dna": [
+        {
+          "label": "Po",
+          "value": 2078
+        },
+        {
+          "label": "Ut",
+          "value": 2020
+        },
+        {
+          "label": "St",
+          "value": 2352
+        },
+        {
+          "label": "Stv",
+          "value": 2122
+        },
+        {
+          "label": "Pi",
+          "value": 1626
+        },
+        {
+          "label": "So",
+          "value": 666
+        },
+        {
+          "label": "Ne",
+          "value": 737
+        }
+      ],
+      "top_vozidla_podla_poctu_jazd": [
+        {
+          "label": "SPZ26",
+          "value": 902
+        },
+        {
+          "label": "SPZ24",
+          "value": 875
+        },
+        {
+          "label": "SPZ36",
+          "value": 830
+        },
+        {
+          "label": "SPZ32",
+          "value": 745
+        },
+        {
+          "label": "SPZ35",
+          "value": 726
+        },
+        {
+          "label": "SPZ15",
+          "value": 722
+        },
+        {
+          "label": "SPZ22",
+          "value": 714
+        },
+        {
+          "label": "SPZ28",
+          "value": 707
+        }
+      ],
+      "rozdelenie_podla_vzdialenosti": [
+        {
+          "label": "< 0,05 km",
+          "value": 6353
+        },
+        {
+          "label": "0,05 - 0,5 km",
+          "value": 1730
+        },
+        {
+          "label": "0,5 - 5 km",
+          "value": 1254
+        },
+        {
+          "label": "5 - 20 km",
+          "value": 897
+        },
+        {
+          "label": "20+ km",
+          "value": 1367
+        }
+      ]
+    },
+    "comment": "Najviac jazd malo vozidlo SPZ26 (902), najmenej SPZ14 (341). Najsilnejsi den je St. Near-zero zaznamy tvoria 54.8 % vsetkych zaznamov, preto sa oplati pri Tableau dashboarde mat filter na tieto zaznamy."
+  },
+  "material": {
+    "kpi": {
+      "Celkovy pocet pohybov": 644106,
+      "Pocet materialov": 690,
+      "Pocet prefixov": 26,
+      "Celkove mnozstvo": 177585193.0,
+      "Priemerne mnozstvo": 275.7,
+      "Median mnozstva": 9.0
+    },
+    "charts": {
+      "pohyby_podla_mesiaca": [
+        {
+          "label": "01/2023",
+          "value": 15607
+        },
+        {
+          "label": "02/2023",
+          "value": 17784
+        },
+        {
+          "label": "03/2023",
+          "value": 17506
+        },
+        {
+          "label": "04/2023",
+          "value": 19262
+        },
+        {
+          "label": "05/2023",
+          "value": 15525
+        },
+        {
+          "label": "06/2023",
+          "value": 22083
+        },
+        {
+          "label": "07/2023",
+          "value": 12414
+        },
+        {
+          "label": "08/2023",
+          "value": 20760
+        },
+        {
+          "label": "09/2023",
+          "value": 16839
+        },
+        {
+          "label": "10/2023",
+          "value": 21991
+        },
+        {
+          "label": "11/2023",
+          "value": 20648
+        },
+        {
+          "label": "12/2023",
+          "value": 14137
+        },
+        {
+          "label": "01/2024",
+          "value": 18943
+        },
+        {
+          "label": "02/2024",
+          "value": 17058
+        },
+        {
+          "label": "03/2024",
+          "value": 15972
+        },
+        {
+          "label": "04/2024",
+          "value": 20626
+        },
+        {
+          "label": "05/2024",
+          "value": 24514
+        },
+        {
+          "label": "06/2024",
+          "value": 18419
+        },
+        {
+          "label": "07/2024",
+          "value": 18749
+        },
+        {
+          "label": "08/2024",
+          "value": 18894
+        },
+        {
+          "label": "09/2024",
+          "value": 18517
+        },
+        {
+          "label": "10/2024",
+          "value": 18006
+        },
+        {
+          "label": "11/2024",
+          "value": 22162
+        },
+        {
+          "label": "12/2024",
+          "value": 15889
+        },
+        {
+          "label": "01/2025",
+          "value": 17830
+        },
+        {
+          "label": "02/2025",
+          "value": 15613
+        },
+        {
+          "label": "03/2025",
+          "value": 21538
+        },
+        {
+          "label": "04/2025",
+          "value": 16639
+        },
+        {
+          "label": "05/2025",
+          "value": 14805
+        },
+        {
+          "label": "06/2025",
+          "value": 17279
+        },
+        {
+          "label": "07/2025",
+          "value": 16541
+        },
+        {
+          "label": "08/2025",
+          "value": 14925
+        },
+        {
+          "label": "09/2025",
+          "value": 19400
+        },
+        {
+          "label": "10/2025",
+          "value": 17018
+        },
+        {
+          "label": "11/2025",
+          "value": 17505
+        },
+        {
+          "label": "12/2025",
+          "value": 12708
+        }
+      ],
+      "mnozstvo_podla_mesiaca": [
+        {
+          "label": "01/2023",
+          "value": 3823686.4
+        },
+        {
+          "label": "02/2023",
+          "value": 5478163.8
+        },
+        {
+          "label": "03/2023",
+          "value": 4520633.0
+        },
+        {
+          "label": "04/2023",
+          "value": 4327146.3
+        },
+        {
+          "label": "05/2023",
+          "value": 2997929.1
+        },
+        {
+          "label": "06/2023",
+          "value": 10192120.3
+        },
+        {
+          "label": "07/2023",
+          "value": 3801198.5
+        },
+        {
+          "label": "08/2023",
+          "value": 3829967.4
+        },
+        {
+          "label": "09/2023",
+          "value": 4440291.3
+        },
+        {
+          "label": "10/2023",
+          "value": 5569909.3
+        },
+        {
+          "label": "11/2023",
+          "value": 4236907.8
+        },
+        {
+          "label": "12/2023",
+          "value": 3381396.7
+        },
+        {
+          "label": "01/2024",
+          "value": 3959627.3
+        },
+        {
+          "label": "02/2024",
+          "value": 3285653.0
+        },
+        {
+          "label": "03/2024",
+          "value": 4210198.1
+        },
+        {
+          "label": "04/2024",
+          "value": 4176014.2
+        },
+        {
+          "label": "05/2024",
+          "value": 4830601.6
+        },
+        {
+          "label": "06/2024",
+          "value": 4271110.7
+        },
+        {
+          "label": "07/2024",
+          "value": 4438020.9
+        },
+        {
+          "label": "08/2024",
+          "value": 7070982.1
+        },
+        {
+          "label": "09/2024",
+          "value": 4407621.0
+        },
+        {
+          "label": "10/2024",
+          "value": 4943206.5
+        },
+        {
+          "label": "11/2024",
+          "value": 14860462.0
+        },
+        {
+          "label": "12/2024",
+          "value": 4816259.5
+        },
+        {
+          "label": "01/2025",
+          "value": 3838995.1
+        },
+        {
+          "label": "02/2025",
+          "value": 4318182.2
+        },
+        {
+          "label": "03/2025",
+          "value": 5191899.2
+        },
+        {
+          "label": "04/2025",
+          "value": 4337430.0
+        },
+        {
+          "label": "05/2025",
+          "value": 3609948.3
+        },
+        {
+          "label": "06/2025",
+          "value": 4593243.0
+        },
+        {
+          "label": "07/2025",
+          "value": 4273112.2
+        },
+        {
+          "label": "08/2025",
+          "value": 4243907.4
+        },
+        {
+          "label": "09/2025",
+          "value": 5997463.3
+        },
+        {
+          "label": "10/2025",
+          "value": 5375715.8
+        },
+        {
+          "label": "11/2025",
+          "value": 4978159.1
+        },
+        {
+          "label": "12/2025",
+          "value": 4958030.3
+        }
+      ],
+      "top_prefixy_podla_pohybov": [
+        {
+          "label": "MAT07111",
+          "value": 273548
+        },
+        {
+          "label": "MAT07110",
+          "value": 108754
+        },
+        {
+          "label": "MAT07697",
+          "value": 59033
+        },
+        {
+          "label": "MAT07309",
+          "value": 50332
+        },
+        {
+          "label": "MAT07711",
+          "value": 32345
+        },
+        {
+          "label": "MAT07107",
+          "value": 28155
+        },
+        {
+          "label": "MAT07607",
+          "value": 19820
+        },
+        {
+          "label": "MAT07565",
+          "value": 18409
+        }
+      ],
+      "abc_segmenty": [
+        {
+          "label": "A",
+          "value": 32
+        },
+        {
+          "label": "B",
+          "value": 70
+        },
+        {
+          "label": "C",
+          "value": 588
+        }
+      ]
+    },
+    "comment": "Najaktivnejsi prefix podla poctu pohybov je MAT07111 (273548 pohybov). Interpretacia je o pohyboch materialu, nie o presnom stave skladu, preto sa v texte ani vo vizualizaciach nehovori o zasobach na sklade."
+  },
+  "pokrocilejsia_analytika": {
+    "jazdy": {
+      "potentially_inefficient_trip_count": 308,
+      "description": "Heuristika oznacuje zaznamy s trvanim aspon 30 minut a so zmenou polohy pod 0,5 km. Ide len o signal na kontrolu, nie o dokazanu neefektivitu.",
+      "top_vehicle_shares": [
+        {
+          "vehicle_id": "SPZ14",
+          "trip_count": 341,
+          "inefficient_trip_count": 35,
+          "inefficient_share_pct": 10.3
+        },
+        {
+          "vehicle_id": "SPZ27",
+          "trip_count": 610,
+          "inefficient_trip_count": 38,
+          "inefficient_share_pct": 6.2
+        },
+        {
+          "vehicle_id": "SPZ28",
+          "trip_count": 707,
+          "inefficient_trip_count": 36,
+          "inefficient_share_pct": 5.1
+        },
+        {
+          "vehicle_id": "SPZ33",
+          "trip_count": 498,
+          "inefficient_trip_count": 20,
+          "inefficient_share_pct": 4.0
+        },
+        {
+          "vehicle_id": "SPZ11",
+          "trip_count": 423,
+          "inefficient_trip_count": 16,
+          "inefficient_share_pct": 3.8
+        }
+      ]
+    },
+    "material": {
+      "abc_summary": [
+        {
+          "abc_segment": "A",
+          "unique_material_count": 32
+        },
+        {
+          "abc_segment": "B",
+          "unique_material_count": 70
+        },
+        {
+          "abc_segment": "C",
+          "unique_material_count": 588
+        }
+      ],
+      "description": "Pouzita je jednoducha ABC segmentacia podla kumulativneho podielu na celkovom mnozstve. Je interpretovatelnejsia ako clustering a lepsie sa obhajuje v studentskom projekte."
+    }
+  },
+  "porovnanie_html_vs_tableau": {
+    "message": "HTML je doplnkovy artefakt postaveny na tych istych CSV. Ak sa cisla v HTML a Tableau lisia, najprv treba skontrolovat filtre, typy datumov a rozdiel medzi COUNT a COUNTD. Pri finalnej obhajobe ma prednost validacia v Tableau."
+  }
+}</script>
+</body>
+</html>
