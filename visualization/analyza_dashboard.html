@@ -114,13 +114,6 @@
       color: var(--accent1);
     }
 
-    .header-sub {
-      color: var(--text-soft);
-      max-width: 980px;
-      font-size: 14px;
-      font-family: var(--font-mono);
-    }
-
     .meta-strip {
       display: grid;
       grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -649,7 +642,6 @@
   <header>
     <div class="page-shell">
       <h1>Analyticky <span>Dashboard</span></h1>
-      <div class="header-sub">Jazdy 2024-01-02 - 2024-12-30 | Material 2023-01-02 - 2025-12-19 | 655 707 zaznamov</div>
 
       <div class="meta-strip">
             <div class="meta-card">
@@ -737,14 +729,14 @@
             
             <div class="field-row">
               <div class="field-name">FLAGY</div>
-              <div class="field-meaning">Odvodene priznaky near-zero, short-trip a potentially-inefficient pre rychlu segmentaciu.</div>
+              <div class="field-meaning">Odvodene priznaky pre near-zero heuristiku, Tableau validitu jazdy a vzdialenostne kategorie.</div>
               <div class="field-type">BOOLEAN</div>
             </div>
             
       </div>
       <div class="limit-box">
         <div class="limit-title">Limity interpretacie</div>
-        <ul><li>DIST_START_END_M vyjadruje len priamu vzdialenost medzi startom a koncom, nie realnu trasu po cestach.</li><li>V datasete nie su adresy, dovod jazdy, naklady ani prepravovany material.</li><li>Surove suradnice mali zmiesany pocet cislic a museli sa standardizovat; 2 zaznamy ostali bez validnej startovacej polohy.</li><li>Cast zaznamov ma velmi maly posun, preto sa pri interpretacii oddeluju near-zero zaznamy od beznych jazd.</li></ul>
+        <ul><li>DIST_START_END_M vyjadruje len priamu vzdialenost medzi startom a koncom, nie realnu trasu po cestach.</li><li>V datasete nie su adresy, dovod jazdy, naklady ani prepravovany material.</li><li>Tableau validita jazdy je viazana na startove suradnice po prepocte EW_START / 1000000 a EL_START / 1000000.</li><li>Workbook ma aj priestorove pohlady, ale HTML ich sumarizuje len textovo a cez tabulku tras podla suradnic.</li></ul>
       </div>
     </div>
     
@@ -796,7 +788,7 @@
       <div class="insight-grid">
         <div class="insight-item info">
           <strong>Co vieme zodpovedat z jazd</strong>
-          vytazenost vozidiel a rozlozenie jazd v case; porovnanie mesiacov, dni v tyzdni a vzdialenostnych pasiem; odhalenie near-zero a potencialne neefektivnych zaznamov.
+          vytazenost vozidiel a rozlozenie jazd v case; porovnanie mesiacov, dni v tyzdni a Tableau kategorii jazd; odhad dopadu filtra Zobrazit iba validne jazdy.
         </div>
         <div class="insight-item info">
           <strong>Co vieme zodpovedat z materialu</strong>
@@ -816,85 +808,114 @@
     
     <section id="tab-jazdy" class="section">
       <div class="section-title">Jazdy vozidiel</div>
-      <p class="section-copy">Najviac jazd malo vozidlo SPZ26 (902), najmenej SPZ14 (341). Najsilnejsi den je St. Najvyssi podiel platnych jazd ma SPZ28 (59.4 %). Near-zero zaznamy tvoria 54.8 % vsetkych zaznamov.</p>
 
       <div class="kpi-row">
             <div class="kpi-card" style="--accent:var(--accent1)">
-              <div class="kpi-label">Zaznamy jazd</div>
+              <div class="kpi-label">Počet jázd</div>
               <div class="kpi-value">11 601</div>
-              <div class="kpi-sub">kompletne obdobie 2024</div>
+              
             </div>
             
             <div class="kpi-card" style="--accent:var(--accent2)">
-              <div class="kpi-label">Vozidla</div>
+              <div class="kpi-label">Počet vozidiel</div>
               <div class="kpi-value">18</div>
-              <div class="kpi-sub">unikatne SPZ v datasete</div>
+              
             </div>
             
             <div class="kpi-card" style="--accent:var(--accent3)">
-              <div class="kpi-label">Platne jazdy</div>
-              <div class="kpi-value">5 248</div>
-              <div class="kpi-sub">45,2 %</div>
+              <div class="kpi-label">Priem. jazdy / vozidlo</div>
+              <div class="kpi-value">644</div>
+              
             </div>
             
             <div class="kpi-card" style="--accent:var(--accent4)">
-              <div class="kpi-label">Near-zero podiel</div>
-              <div class="kpi-value">54,8 %</div>
-              <div class="kpi-sub">6 353 zaznamov</div>
+              <div class="kpi-label">Validné jazdy</div>
+              <div class="kpi-value">9 399</div>
+              
             </div>
             
             <div class="kpi-card" style="--accent:var(--accent1)">
-              <div class="kpi-label">Priemer km / platna jazda</div>
-              <div class="kpi-value">12,39</div>
-              <div class="kpi-sub">median 2,11</div>
+              <div class="kpi-label">Mimo validného rozsahu</div>
+              <div class="kpi-value">2 202</div>
+              
             </div>
             
             <div class="kpi-card" style="--accent:var(--accent2)">
-              <div class="kpi-label">Celkova vzdialenost</div>
-              <div class="kpi-value">65,0K km</div>
-              <div class="kpi-sub">sucet len pre platne jazdy</div>
+              <div class="kpi-label">Žiadna jazda (0m)</div>
+              <div class="kpi-value">390</div>
+              
             </div>
             </div>
 
       <div class="grid-2">
         <div class="card canvas-card">
-          <div class="card-title">Pocet zaznamov podla mesiaca</div>
+          <div class="card-title">Vývoj jázd v čase</div>
           <canvas id="chartMonthlyTrips" height="220"></canvas>
         </div>
         <div class="card canvas-card">
-          <div class="card-title">Pocet zaznamov podla dna v tyzdni</div>
+          <div class="card-title">Jazdy podľa dňa</div>
           <canvas id="chartWeekdayTrips" height="220"></canvas>
         </div>
       </div>
 
       <div class="grid-13">
         <div class="card canvas-card">
-          <div class="card-title">Rozdelenie podla priamej vzdialenosti</div>
+          <div class="card-title">Kategórie jázd podľa Tableau</div>
           <canvas id="chartTripDistance" height="260"></canvas>
         </div>
         <div class="card canvas-card">
-          <div class="card-title">Top vozidla podla poctu zaznamov</div>
+          <div class="card-title">Vyťaženosť vozidiel podľa počtu jázd</div>
           <canvas id="chartTopVehicles" height="260"></canvas>
         </div>
       </div>
 
       
     <div class="card table-card">
-      <div class="card-title">Detail vozidiel</div>
-      <p class="table-intro">Tabulka kombinuje vyuzitie flotily, podiel near-zero zaznamov a heuristicke rizikove spravanie.</p>
+      <div class="card-title">Vyťaženosť vozidiel</div>
+      <p class="table-intro">Vyťaženosť je postavená na počte jázd na vozidlo; validné jazdy používajú rovnakú štartovú bounds logiku ako Tableau.</p>
       <div class="table-wrap">
         <table class="data-table">
-          <thead><tr><th>Vozidlo</th><th>Zaznamy</th><th>Platne jazdy</th><th>Near-zero</th><th>Platna vzdialenost</th><th>Priemer / platna jazda</th><th>Oznacene heuristikou</th></tr></thead>
-          <tbody><tr><td>SPZ26</td><td>902</td><td>44,6 %</td><td>55,4 %</td><td>3 166,2 km</td><td>7,88 km</td><td>2,9 %</td></tr><tr><td>SPZ24</td><td>875</td><td>42,3 %</td><td>57,7 %</td><td>6 015,7 km</td><td>16,26 km</td><td>0,6 %</td></tr><tr><td>SPZ36</td><td>830</td><td>41,9 %</td><td>58,1 %</td><td>5 054,3 km</td><td>14,52 km</td><td>0,6 %</td></tr><tr><td>SPZ32</td><td>745</td><td>42,8 %</td><td>57,2 %</td><td>2 283,1 km</td><td>7,16 km</td><td>2,4 %</td></tr><tr><td>SPZ35</td><td>726</td><td>48,3 %</td><td>51,7 %</td><td>4 441,8 km</td><td>12,65 km</td><td>1,7 %</td></tr><tr><td>SPZ15</td><td>722</td><td>29,4 %</td><td>70,6 %</td><td>4 956,3 km</td><td>23,38 km</td><td>1,9 %</td></tr><tr><td>SPZ22</td><td>714</td><td>59,2 %</td><td>40,8 %</td><td>2 714,9 km</td><td>6,42 km</td><td>3,4 %</td></tr><tr><td>SPZ28</td><td>707</td><td>59,4 %</td><td>40,6 %</td><td>3 353,7 km</td><td>7,99 km</td><td>5,1 %</td></tr><tr><td>SPZ31</td><td>701</td><td>35,0 %</td><td>65,0 %</td><td>1 354,8 km</td><td>5,53 km</td><td>0,6 %</td></tr><tr><td>SPZ39</td><td>641</td><td>47,7 %</td><td>52,3 %</td><td>3 693,6 km</td><td>12,07 km</td><td>2,5 %</td></tr></tbody>
+          <thead><tr><th>Vozidlo</th><th>Počet jázd</th><th>Podiel zo všetkých</th><th>Validné jazdy</th><th>Podiel validných</th><th>Dominantná kategória</th></tr></thead>
+          <tbody><tr><td>SPZ26</td><td>902</td><td>7,8 %</td><td>753</td><td>83,5 %</td><td>Diaľková (&gt;50km)</td></tr><tr><td>SPZ24</td><td>875</td><td>7,5 %</td><td>720</td><td>82,3 %</td><td>Diaľková (&gt;50km)</td></tr><tr><td>SPZ36</td><td>830</td><td>7,2 %</td><td>674</td><td>81,2 %</td><td>Regionálna (5-50km)</td></tr><tr><td>SPZ32</td><td>745</td><td>6,4 %</td><td>601</td><td>80,7 %</td><td>Diaľková (&gt;50km)</td></tr><tr><td>SPZ35</td><td>726</td><td>6,3 %</td><td>578</td><td>79,6 %</td><td>Diaľková (&gt;50km)</td></tr><tr><td>SPZ15</td><td>722</td><td>6,2 %</td><td>578</td><td>80,1 %</td><td>Regionálna (5-50km)</td></tr><tr><td>SPZ22</td><td>714</td><td>6,2 %</td><td>578</td><td>81,0 %</td><td>Diaľková (&gt;50km)</td></tr><tr><td>SPZ28</td><td>707</td><td>6,1 %</td><td>565</td><td>79,9 %</td><td>Diaľková (&gt;50km)</td></tr><tr><td>SPZ31</td><td>701</td><td>6,0 %</td><td>618</td><td>88,2 %</td><td>Regionálna (5-50km)</td></tr><tr><td>SPZ39</td><td>641</td><td>5,5 %</td><td>528</td><td>82,4 %</td><td>Diaľková (&gt;50km)</td></tr></tbody>
         </table>
       </div>
     </div>
     
 
+      <div class="grid-2">
+        
+    <div class="card table-card">
+      <div class="card-title">Top trasy podľa počtu záznamov</div>
+      <p class="table-intro">Pre čitateľnosť sú súradnice normalizované. Tabuľka zoraďuje iba opakované coordinate-based páry, nie cestná trasa ani adresa.</p>
+      <div class="table-wrap">
+        <table class="data-table">
+          <thead><tr><th>Trasa podľa štart/cieľ súradníc</th><th>Záznamy</th></tr></thead>
+          <tbody><tr><td>48.35812,17.57765 → 48.35631,17.56390</td><td>2</td></tr><tr><td>49.30884,20.69869 → 49.30828,20.69867</td><td>2</td></tr><tr><td>48.19653,18.59430 → 48.19639,18.59447</td><td>2</td></tr><tr><td>48.33532,19.67048 → 48.33530,19.67042</td><td>2</td></tr><tr><td>49.01087,21.25977 → 49.01089,21.25983</td><td>2</td></tr><tr><td>49.30886,20.69867 → 49.30882,20.69869</td><td>2</td></tr><tr><td>49.01084,21.25975 → 49.01085,21.25979</td><td>2</td></tr><tr><td>48.33535,19.67044 → 48.33533,19.67046</td><td>2</td></tr></tbody>
+        </table>
+      </div>
+    </div>
+    
+
+        <div class="card">
+          <div class="card-title">Priestorové pohľady z Tableau</div>
+          <p class="card-intro">
+            Workbook obsahuje listy <strong>Mapa jázd</strong> a <strong>Mapa hustoty jázd</strong>. HTML ich
+            zámerne nenahrádza plnou mapou, ale drží rovnakú vstupnú logiku parametra
+            <strong>Zobraziť iba validné jazdy</strong>.
+          </p>
+          <ul class="validation-list">
+            <li>Default parametra je zapnutý a používa logiku: LAT_START medzi 47 a 51 a LON_START medzi 12 a 23.</li>
+            <li>Pri zapnutom filtri ostáva 9 399 štartov z 11 601.</li>
+            <li>Pre route summary sa dalo čitateľne normalizovať 11 599 záznamov so štart/cieľ párom.</li>
+            <li>HTML zámerne neukazuje adresy ani skutočné trasy po cestách.</li>
+          </ul>
+        </div>
+      </div>
+
       <div class="insight">
         <strong>Rychla interpretacia:</strong>
-        Pri tejto teme je dolezite filtrovat near-zero zaznamy osobitne. Inak budu skreslovat priemerne vzdialenosti,
-        porovnanie vozidiel aj interpretaciu vyuzitia flotily.
+        V RIDES sekcii su KPI, kategorie jazd a validacny filter teraz zladene s Tableau. Pri mape a trasach zostava HTML len pri
+        coordinate-based sumarizacii, aby nepretvaralo surovu priamu vzdialenost na realnu cestnu trasu.
       </div>
     </section>
     
@@ -907,36 +928,42 @@
             <div class="kpi-card" style="--accent:var(--accent3)">
               <div class="kpi-label">Pohyby materialu</div>
               <div class="kpi-value">644 106</div>
+              
               <div class="kpi-sub">roky 2023 az 2025</div>
             </div>
             
             <div class="kpi-card" style="--accent:var(--accent1)">
               <div class="kpi-label">Unikatne materialy</div>
               <div class="kpi-value">690</div>
+              
               <div class="kpi-sub">26 prefixov</div>
             </div>
             
             <div class="kpi-card" style="--accent:var(--accent2)">
               <div class="kpi-label">Celkove mnozstvo</div>
               <div class="kpi-value">177,6M</div>
+              
               <div class="kpi-sub">sumar cez vsetky pohyby</div>
             </div>
             
             <div class="kpi-card" style="--accent:var(--accent4)">
               <div class="kpi-label">Priemerne mnozstvo</div>
               <div class="kpi-value">275,7</div>
+              
               <div class="kpi-sub">median 9,0</div>
             </div>
             
             <div class="kpi-card" style="--accent:var(--accent1)">
               <div class="kpi-label">Nulove mnozstvo</div>
               <div class="kpi-value">172</div>
+              
               <div class="kpi-sub">zaznamov na kontrolu</div>
             </div>
             
             <div class="kpi-card" style="--accent:var(--accent2)">
               <div class="kpi-label">Najsilnejsi objemovy mesiac</div>
               <div class="kpi-value">11/2024</div>
+              
               <div class="kpi-sub">14,9M</div>
             </div>
             </div>
@@ -1069,11 +1096,11 @@
 
       <div class="card validation-card">
         <div class="card-title">HTML vs Tableau validation</div>
-        <p class="section-copy">HTML je doplnkovy artefakt postaveny na tych istych datasetoch. Ak sa cisla v HTML a Tableau lisia, najprv treba skontrolovat filtre, typy datumov a rozdiel medzi COUNT a COUNTD. Pri finalnej obhajobe ma prednost validacia v Tableau.</p>
+        <p class="section-copy">RIDES sekcia v HTML je zosuladena s Tableau na urovni COUNT/COUNTD KPI, 6 kategorii jazd a logiky filtra Zobrazit iba validne jazdy. Plne mapove listy z Tableau HTML zamerne nenahradza interaktivnou mapou.</p>
         <ul class="validation-list">
-          <li>HTML je doplnok postaveny na tych istych datasetoch ako Tableau analyza.</li>
-          <li>Pri rozdiele treba porovnat filtre, datumove typy a rozdiel medzi COUNT a COUNTD.</li>
-          <li>Do finalnej obhajoby ma prednost validacia v Tableau.</li>
+          <li>RIDES KPI v HTML su pocitane ako COUNT([SPZ]), COUNTD([SPZ]) a ROUND(COUNT([SPZ]) / COUNTD([SPZ]), 0).</li>
+          <li>Kategorie jazd pouzivaju tych istych 6 bucketov ako Tableau a validny start pouziva bounds 47-51 / 12-23.</li>
+          <li>Mapove listy ostavaju v HTML len ako textove a tabulkove zhrnutie; pri finalnej obhajobe ma prednost Tableau.</li>
         </ul>
       </div>
     </section>
@@ -1086,7 +1113,7 @@
     <div class="chart-tooltip-value"></div>
   </div>
 
-  <script id="dashboard-data" type="application/json">{"meta": {"total_records": 655707, "dataset_cards": [{"label": "Dataset 1", "value": 11601, "note": "Jazdy vozidiel za sledovane obdobie"}, {"label": "Dataset 2", "value": 644106, "note": "Pohyby materialu za sledovane obdobie"}]}, "pochopenie_dat": {"jazdy": {"record_count": 11601, "field_count": 14, "date_range": ["2024-01-02", "2024-12-30"], "limitations": ["DIST_START_END_M vyjadruje len priamu vzdialenost medzi startom a koncom, nie realnu trasu po cestach.", "V datasete nie su adresy, dovod jazdy, naklady ani prepravovany material.", "Surove suradnice mali zmiesany pocet cislic a museli sa standardizovat; 2 zaznamy ostali bez validnej startovacej polohy.", "Cast zaznamov ma velmi maly posun, preto sa pri interpretacii oddeluju near-zero zaznamy od beznych jazd."], "answerable": ["vytazenost vozidiel a rozlozenie jazd v case", "porovnanie mesiacov, dni v tyzdni a vzdialenostnych pasiem", "odhalenie near-zero a potencialne neefektivnych zaznamov"], "not_answerable": ["realne trasy po cestach a presne naklady", "dovod jazdy, vodic a prepravovany material"]}, "material": {"record_count": 644106, "field_count": 4, "date_range": ["2023-01-02", "2025-12-19"], "limitations": ["Dataset obsahuje pohyby materialu, nie presny stav skladu v case.", "Nie je uvedeny smer pohybu, jednotka mnozstva ani cena materialu.", "Materialovy prefix je odvodeny z prvych 8 znakov kodu materialu a sluzi len ako jednoducha skupina."], "answerable": ["top prefixy, sezonnost pohybov a objemov", "ABC segmentaciu a frekvenciu pohybov materialov", "identifikaciu nulovych mnozstiev a dominantnych skupin"], "not_answerable": ["presny stav skladu v case", "prijem vs. vydaj, cena a skladova lokacia"]}}, "jazdy": {"kpi": {"Celkovy pocet zaznamov": 11601, "Pocet vozidiel": 18, "Platne jazdy (> 50 m)": 5248, "Near-zero zaznamy": 6353, "Priemer km na platnu jazdu": 12.39, "Median km na platnu jazdu": 2.11}, "totals": {"valid_distance_km": 65007.61, "avg_trips_per_vehicle": 644.5, "near_zero_share_pct": 54.8, "short_trip_count": 2984, "weekend_trip_count": 1403}, "charts": {"jazdy_podla_mesiaca": [{"label": "01/2024", "value": 841}, {"label": "02/2024", "value": 901}, {"label": "03/2024", "value": 990}, {"label": "04/2024", "value": 1003}, {"label": "05/2024", "value": 1116}, {"label": "06/2024", "value": 962}, {"label": "07/2024", "value": 988}, {"label": "08/2024", "value": 992}, {"label": "09/2024", "value": 995}, {"label": "10/2024", "value": 1130}, {"label": "11/2024", "value": 1021}, {"label": "12/2024", "value": 662}], "jazdy_podla_dna": [{"label": "Po", "value": 2078}, {"label": "Ut", "value": 2020}, {"label": "St", "value": 2352}, {"label": "Stv", "value": 2122}, {"label": "Pi", "value": 1626}, {"label": "So", "value": 666}, {"label": "Ne", "value": 737}], "top_vozidla_podla_poctu_jazd": [{"label": "SPZ26", "value": 902}, {"label": "SPZ24", "value": 875}, {"label": "SPZ36", "value": 830}, {"label": "SPZ32", "value": 745}, {"label": "SPZ35", "value": 726}, {"label": "SPZ15", "value": 722}, {"label": "SPZ22", "value": 714}, {"label": "SPZ28", "value": 707}], "rozdelenie_podla_vzdialenosti": [{"label": "< 0,05 km", "value": 6353}, {"label": "0,05 - 0,5 km", "value": 1730}, {"label": "0,5 - 5 km", "value": 1254}, {"label": "5 - 20 km", "value": 897}, {"label": "20+ km", "value": 1367}]}, "vehicle_table": [{"vehicle_id": "SPZ26", "trip_count": 902, "valid_trip_count": 402, "valid_share_pct": 44.6, "near_zero_share_pct": 55.4, "inefficient_share_pct": 2.9, "valid_distance_km": 3166.2, "avg_valid_distance_km": 7.88}, {"vehicle_id": "SPZ24", "trip_count": 875, "valid_trip_count": 370, "valid_share_pct": 42.3, "near_zero_share_pct": 57.7, "inefficient_share_pct": 0.6, "valid_distance_km": 6015.7, "avg_valid_distance_km": 16.26}, {"vehicle_id": "SPZ36", "trip_count": 830, "valid_trip_count": 348, "valid_share_pct": 41.9, "near_zero_share_pct": 58.1, "inefficient_share_pct": 0.6, "valid_distance_km": 5054.3, "avg_valid_distance_km": 14.52}, {"vehicle_id": "SPZ32", "trip_count": 745, "valid_trip_count": 319, "valid_share_pct": 42.8, "near_zero_share_pct": 57.2, "inefficient_share_pct": 2.4, "valid_distance_km": 2283.1, "avg_valid_distance_km": 7.16}, {"vehicle_id": "SPZ35", "trip_count": 726, "valid_trip_count": 351, "valid_share_pct": 48.3, "near_zero_share_pct": 51.7, "inefficient_share_pct": 1.7, "valid_distance_km": 4441.8, "avg_valid_distance_km": 12.65}, {"vehicle_id": "SPZ15", "trip_count": 722, "valid_trip_count": 212, "valid_share_pct": 29.4, "near_zero_share_pct": 70.6, "inefficient_share_pct": 1.9, "valid_distance_km": 4956.3, "avg_valid_distance_km": 23.38}, {"vehicle_id": "SPZ22", "trip_count": 714, "valid_trip_count": 423, "valid_share_pct": 59.2, "near_zero_share_pct": 40.8, "inefficient_share_pct": 3.4, "valid_distance_km": 2714.9, "avg_valid_distance_km": 6.42}, {"vehicle_id": "SPZ28", "trip_count": 707, "valid_trip_count": 420, "valid_share_pct": 59.4, "near_zero_share_pct": 40.6, "inefficient_share_pct": 5.1, "valid_distance_km": 3353.7, "avg_valid_distance_km": 7.99}, {"vehicle_id": "SPZ31", "trip_count": 701, "valid_trip_count": 245, "valid_share_pct": 35.0, "near_zero_share_pct": 65.0, "inefficient_share_pct": 0.6, "valid_distance_km": 1354.8, "avg_valid_distance_km": 5.53}, {"vehicle_id": "SPZ39", "trip_count": 641, "valid_trip_count": 306, "valid_share_pct": 47.7, "near_zero_share_pct": 52.3, "inefficient_share_pct": 2.5, "valid_distance_km": 3693.6, "avg_valid_distance_km": 12.07}, {"vehicle_id": "SPZ04", "trip_count": 631, "valid_trip_count": 352, "valid_share_pct": 55.8, "near_zero_share_pct": 44.2, "inefficient_share_pct": 1.6, "valid_distance_km": 5806.6, "avg_valid_distance_km": 16.5}, {"vehicle_id": "SPZ27", "trip_count": 610, "valid_trip_count": 217, "valid_share_pct": 35.6, "near_zero_share_pct": 64.4, "inefficient_share_pct": 6.2, "valid_distance_km": 1020.6, "avg_valid_distance_km": 4.7}, {"vehicle_id": "SPZ20", "trip_count": 572, "valid_trip_count": 189, "valid_share_pct": 33.0, "near_zero_share_pct": 67.0, "inefficient_share_pct": 2.4, "valid_distance_km": 643.0, "avg_valid_distance_km": 3.4}, {"vehicle_id": "SPZ01", "trip_count": 560, "valid_trip_count": 195, "valid_share_pct": 34.8, "near_zero_share_pct": 65.2, "inefficient_share_pct": 0.4, "valid_distance_km": 5196.4, "avg_valid_distance_km": 26.65}, {"vehicle_id": "SPZ33", "trip_count": 498, "valid_trip_count": 263, "valid_share_pct": 52.8, "near_zero_share_pct": 47.2, "inefficient_share_pct": 4.0, "valid_distance_km": 3298.2, "avg_valid_distance_km": 12.54}, {"vehicle_id": "SPZ11", "trip_count": 423, "valid_trip_count": 232, "valid_share_pct": 54.8, "near_zero_share_pct": 45.2, "inefficient_share_pct": 3.8, "valid_distance_km": 3448.0, "avg_valid_distance_km": 14.86}, {"vehicle_id": "SPZ25", "trip_count": 403, "valid_trip_count": 239, "valid_share_pct": 59.3, "near_zero_share_pct": 40.7, "inefficient_share_pct": 3.2, "valid_distance_km": 6876.6, "avg_valid_distance_km": 28.77}, {"vehicle_id": "SPZ14", "trip_count": 341, "valid_trip_count": 165, "valid_share_pct": 48.4, "near_zero_share_pct": 51.6, "inefficient_share_pct": 10.3, "valid_distance_km": 1683.8, "avg_valid_distance_km": 10.2}], "comment": "Najviac jazd malo vozidlo SPZ26 (902), najmenej SPZ14 (341). Najsilnejsi den je St. Najvyssi podiel platnych jazd ma SPZ28 (59.4 %). Near-zero zaznamy tvoria 54.8 % vsetkych zaznamov."}, "material": {"kpi": {"Celkovy pocet pohybov": 644106, "Pocet materialov": 690, "Pocet prefixov": 26, "Celkove mnozstvo": 177585193.0, "Priemerne mnozstvo": 275.7, "Median mnozstva": 9.0}, "totals": {"zero_quantity_record_count": 172, "top_quantity_month": "11/2024", "top_quantity_month_value": 14860462.0}, "charts": {"pohyby_podla_mesiaca": [{"label": "01/2023", "value": 15607}, {"label": "02/2023", "value": 17784}, {"label": "03/2023", "value": 17506}, {"label": "04/2023", "value": 19262}, {"label": "05/2023", "value": 15525}, {"label": "06/2023", "value": 22083}, {"label": "07/2023", "value": 12414}, {"label": "08/2023", "value": 20760}, {"label": "09/2023", "value": 16839}, {"label": "10/2023", "value": 21991}, {"label": "11/2023", "value": 20648}, {"label": "12/2023", "value": 14137}, {"label": "01/2024", "value": 18943}, {"label": "02/2024", "value": 17058}, {"label": "03/2024", "value": 15972}, {"label": "04/2024", "value": 20626}, {"label": "05/2024", "value": 24514}, {"label": "06/2024", "value": 18419}, {"label": "07/2024", "value": 18749}, {"label": "08/2024", "value": 18894}, {"label": "09/2024", "value": 18517}, {"label": "10/2024", "value": 18006}, {"label": "11/2024", "value": 22162}, {"label": "12/2024", "value": 15889}, {"label": "01/2025", "value": 17830}, {"label": "02/2025", "value": 15613}, {"label": "03/2025", "value": 21538}, {"label": "04/2025", "value": 16639}, {"label": "05/2025", "value": 14805}, {"label": "06/2025", "value": 17279}, {"label": "07/2025", "value": 16541}, {"label": "08/2025", "value": 14925}, {"label": "09/2025", "value": 19400}, {"label": "10/2025", "value": 17018}, {"label": "11/2025", "value": 17505}, {"label": "12/2025", "value": 12708}], "mnozstvo_podla_mesiaca": [{"label": "01/2023", "value": 3823686.4}, {"label": "02/2023", "value": 5478163.8}, {"label": "03/2023", "value": 4520633.0}, {"label": "04/2023", "value": 4327146.3}, {"label": "05/2023", "value": 2997929.1}, {"label": "06/2023", "value": 10192120.3}, {"label": "07/2023", "value": 3801198.5}, {"label": "08/2023", "value": 3829967.4}, {"label": "09/2023", "value": 4440291.3}, {"label": "10/2023", "value": 5569909.3}, {"label": "11/2023", "value": 4236907.8}, {"label": "12/2023", "value": 3381396.7}, {"label": "01/2024", "value": 3959627.3}, {"label": "02/2024", "value": 3285653.0}, {"label": "03/2024", "value": 4210198.1}, {"label": "04/2024", "value": 4176014.2}, {"label": "05/2024", "value": 4830601.6}, {"label": "06/2024", "value": 4271110.7}, {"label": "07/2024", "value": 4438020.9}, {"label": "08/2024", "value": 7070982.1}, {"label": "09/2024", "value": 4407621.0}, {"label": "10/2024", "value": 4943206.5}, {"label": "11/2024", "value": 14860462.0}, {"label": "12/2024", "value": 4816259.5}, {"label": "01/2025", "value": 3838995.1}, {"label": "02/2025", "value": 4318182.2}, {"label": "03/2025", "value": 5191899.2}, {"label": "04/2025", "value": 4337430.0}, {"label": "05/2025", "value": 3609948.3}, {"label": "06/2025", "value": 4593243.0}, {"label": "07/2025", "value": 4273112.2}, {"label": "08/2025", "value": 4243907.4}, {"label": "09/2025", "value": 5997463.3}, {"label": "10/2025", "value": 5375715.8}, {"label": "11/2025", "value": 4978159.1}, {"label": "12/2025", "value": 4958030.3}], "top_prefixy_podla_pohybov": [{"label": "MAT07111", "value": 273548}, {"label": "MAT07110", "value": 108754}, {"label": "MAT07697", "value": 59033}, {"label": "MAT07309", "value": 50332}, {"label": "MAT07711", "value": 32345}, {"label": "MAT07107", "value": 28155}, {"label": "MAT07607", "value": 19820}, {"label": "MAT07565", "value": 18409}], "abc_segmenty": [{"label": "A", "value": 32}, {"label": "B", "value": 70}, {"label": "C", "value": 588}]}, "prefix_table": [{"material_prefix": "MAT07111", "movement_count": 273548, "movement_share_pct": 42.5, "total_quantity": 6895672.5, "quantity_share_pct": 3.9, "unique_material_count": 173, "profile": "frekventovany"}, {"material_prefix": "MAT07110", "movement_count": 108754, "movement_share_pct": 16.9, "total_quantity": 2930287.5, "quantity_share_pct": 1.7, "unique_material_count": 168, "profile": "frekventovany"}, {"material_prefix": "MAT07697", "movement_count": 59033, "movement_share_pct": 9.2, "total_quantity": 139738682.8, "quantity_share_pct": 78.7, "unique_material_count": 116, "profile": "objemovo dominantny"}, {"material_prefix": "MAT07309", "movement_count": 50332, "movement_share_pct": 7.8, "total_quantity": 6114972.0, "quantity_share_pct": 3.4, "unique_material_count": 13, "profile": "frekventovany"}, {"material_prefix": "MAT07711", "movement_count": 32345, "movement_share_pct": 5.0, "total_quantity": 663806.7, "quantity_share_pct": 0.4, "unique_material_count": 10, "profile": "frekventovany"}, {"material_prefix": "MAT07107", "movement_count": 28155, "movement_share_pct": 4.4, "total_quantity": 2334489.0, "quantity_share_pct": 1.3, "unique_material_count": 9, "profile": "stabilny"}, {"material_prefix": "MAT07607", "movement_count": 19820, "movement_share_pct": 3.1, "total_quantity": 435513.0, "quantity_share_pct": 0.2, "unique_material_count": 36, "profile": "sirsie portfolio"}, {"material_prefix": "MAT07565", "movement_count": 18409, "movement_share_pct": 2.9, "total_quantity": 1415490.0, "quantity_share_pct": 0.8, "unique_material_count": 16, "profile": "stabilny"}, {"material_prefix": "MAT07283", "movement_count": 14186, "movement_share_pct": 2.2, "total_quantity": 16059027.8, "quantity_share_pct": 9.0, "unique_material_count": 20, "profile": "sirsie portfolio"}, {"material_prefix": "MAT07624", "movement_count": 14045, "movement_share_pct": 2.2, "total_quantity": 228609.0, "quantity_share_pct": 0.1, "unique_material_count": 6, "profile": "stabilny"}], "comment": "Najaktivnejsi prefix podla poctu pohybov je MAT07111 (273548 pohybov). Podla celkoveho mnozstva jednoznacne dominuje MAT07697 (139,738,682.8). Najsilnejsi mesiac podla objemu je 11/2024."}, "pokrocilejsia_analytika": {"jazdy": {"potentially_inefficient_trip_count": 308, "short_trip_count": 2984, "near_zero_trip_count": 6353, "weekend_trip_count": 1403, "description": "Heuristika oznacuje zaznamy s trvanim aspon 30 minut a so zmenou polohy pod 0,5 km. Ide len o signal na kontrolu, nie o dokazanu neefektivitu.", "top_vehicle_shares": [{"vehicle_id": "SPZ14", "trip_count": 341, "inefficient_trip_count": 35, "inefficient_share_pct": 10.3}, {"vehicle_id": "SPZ27", "trip_count": 610, "inefficient_trip_count": 38, "inefficient_share_pct": 6.2}, {"vehicle_id": "SPZ28", "trip_count": 707, "inefficient_trip_count": 36, "inefficient_share_pct": 5.1}, {"vehicle_id": "SPZ33", "trip_count": 498, "inefficient_trip_count": 20, "inefficient_share_pct": 4.0}, {"vehicle_id": "SPZ11", "trip_count": 423, "inefficient_trip_count": 16, "inefficient_share_pct": 3.8}], "watch_vehicle": {"vehicle_id": "SPZ14", "share_pct": 10.3}}, "material": {"abc_summary": [{"abc_segment": "A", "unique_material_count": 32, "movement_count": 76205, "movement_share_pct": 11.8, "total_quantity": 141595188.2, "quantity_share_pct": 79.7}, {"abc_segment": "B", "unique_material_count": 70, "movement_count": 279774, "movement_share_pct": 43.4, "total_quantity": 27054940.5, "quantity_share_pct": 15.2}, {"abc_segment": "C", "unique_material_count": 588, "movement_count": 288127, "movement_share_pct": 44.7, "total_quantity": 8935064.0, "quantity_share_pct": 5.0}], "zero_quantity_record_count": 172, "description": "Pouzita je jednoducha ABC segmentacia podla kumulativneho podielu na celkovom mnozstve. Je interpretovatelnejsia ako clustering a lahsie sa obhajuje v studentskom projekte."}}, "porovnanie_html_vs_tableau": {"message": "HTML je doplnkovy artefakt postaveny na tych istych datasetoch. Ak sa cisla v HTML a Tableau lisia, najprv treba skontrolovat filtre, typy datumov a rozdiel medzi COUNT a COUNTD. Pri finalnej obhajobe ma prednost validacia v Tableau."}}</script>
+  <script id="dashboard-data" type="application/json">{"meta": {"total_records": 655707, "dataset_cards": [{"label": "Dataset 1", "value": 11601, "note": "Jazdy vozidiel za sledovane obdobie"}, {"label": "Dataset 2", "value": 644106, "note": "Pohyby materialu za sledovane obdobie"}]}, "pochopenie_dat": {"jazdy": {"record_count": 11601, "field_count": 14, "date_range": ["2024-01-02", "2024-12-30"], "limitations": ["DIST_START_END_M vyjadruje len priamu vzdialenost medzi startom a koncom, nie realnu trasu po cestach.", "V datasete nie su adresy, dovod jazdy, naklady ani prepravovany material.", "Tableau validita jazdy je viazana na startove suradnice po prepocte EW_START / 1000000 a EL_START / 1000000.", "Workbook ma aj priestorove pohlady, ale HTML ich sumarizuje len textovo a cez tabulku tras podla suradnic."], "answerable": ["vytazenost vozidiel a rozlozenie jazd v case", "porovnanie mesiacov, dni v tyzdni a Tableau kategorii jazd", "odhad dopadu filtra Zobrazit iba validne jazdy"], "not_answerable": ["realne trasy po cestach a presne naklady", "dovod jazdy, vodic a prepravovany material"]}, "material": {"record_count": 644106, "field_count": 4, "date_range": ["2023-01-02", "2025-12-19"], "limitations": ["Dataset obsahuje pohyby materialu, nie presny stav skladu v case.", "Nie je uvedeny smer pohybu, jednotka mnozstva ani cena materialu.", "Materialovy prefix je odvodeny z prvych 8 znakov kodu materialu a sluzi len ako jednoducha skupina."], "answerable": ["top prefixy, sezonnost pohybov a objemov", "ABC segmentaciu a frekvenciu pohybov materialov", "identifikaciu nulovych mnozstiev a dominantnych skupin"], "not_answerable": ["presny stav skladu v case", "prijem vs. vydaj, cena a skladova lokacia"]}}, "jazdy": {"kpi": {"Pocet jazd": 11601, "Pocet vozidiel": 18, "Priemer jazdy na vozidlo": 644, "Validne jazdy Tableau": 9399, "Nevalidne jazdy Tableau": 2202, "Ziadna jazda 0m": 390}, "totals": {"valid_distance_km": 65007.61, "avg_trips_per_vehicle": 644.5, "near_zero_share_pct": 54.8, "short_trip_count": 2984, "weekend_trip_count": 1403, "tableau_valid_share_pct": 81.0, "tableau_invalid_share_pct": 19.0, "route_summary_ready_count": 11599}, "tableau": {"parameter_name": "Zobraziť iba validné jazdy", "parameter_default": true, "validity_logic": "LAT_START medzi 47 a 51 a LON_START medzi 12 a 23", "worksheets": ["Jazdy podľa dňa", "KPI - Počet jázd", "KPI - Počet vozidiel", "KPI - Priem. jazdy", "Kategórie jázd", "Mapa hustoty jázd", "Mapa jázd", "Trasy", "Vyťaženosť vozidiel", "Vývoj jázd v čase"]}, "charts": {"jazdy_podla_mesiaca": [{"label": "Jan", "value": 841}, {"label": "Feb", "value": 901}, {"label": "Mar", "value": 990}, {"label": "Apr", "value": 1003}, {"label": "Maj", "value": 1116}, {"label": "Jun", "value": 962}, {"label": "Jul", "value": 988}, {"label": "Aug", "value": 992}, {"label": "Sep", "value": 995}, {"label": "Okt", "value": 1130}, {"label": "Nov", "value": 1021}, {"label": "Dec", "value": 662}], "jazdy_podla_dna": [{"label": "Po", "value": 2078}, {"label": "Ut", "value": 2020}, {"label": "St", "value": 2352}, {"label": "Stv", "value": 2122}, {"label": "Pi", "value": 1626}, {"label": "So", "value": 666}, {"label": "Ne", "value": 737}], "top_vozidla_podla_poctu_jazd": [{"label": "SPZ26", "value": 902}, {"label": "SPZ24", "value": 875}, {"label": "SPZ36", "value": 830}, {"label": "SPZ32", "value": 745}, {"label": "SPZ35", "value": 726}, {"label": "SPZ15", "value": 722}, {"label": "SPZ22", "value": 714}, {"label": "SPZ28", "value": 707}], "kategorie_jazd_tableau": [{"label": "Žiadna jazda (0m)", "value": 390}, {"label": "Parkovanie (<100m)", "value": 0}, {"label": "Krátka (100m-1km)", "value": 0}, {"label": "Mestská (1-5km)", "value": 1162}, {"label": "Regionálna (5-50km)", "value": 4801}, {"label": "Diaľková (>50km)", "value": 5248}]}, "vehicle_table": [{"vehicle_id": "SPZ26", "trip_count": 902, "trip_share_pct": 7.8, "valid_trip_count": 753, "valid_share_pct": 83.5, "avg_trip_distance_km": 3.52, "dominant_category": "Diaľková (>50km)"}, {"vehicle_id": "SPZ24", "trip_count": 875, "trip_share_pct": 7.5, "valid_trip_count": 720, "valid_share_pct": 82.3, "avg_trip_distance_km": 6.88, "dominant_category": "Diaľková (>50km)"}, {"vehicle_id": "SPZ36", "trip_count": 830, "trip_share_pct": 7.2, "valid_trip_count": 674, "valid_share_pct": 81.2, "avg_trip_distance_km": 6.1, "dominant_category": "Regionálna (5-50km)"}, {"vehicle_id": "SPZ32", "trip_count": 745, "trip_share_pct": 6.4, "valid_trip_count": 601, "valid_share_pct": 80.7, "avg_trip_distance_km": 3.07, "dominant_category": "Diaľková (>50km)"}, {"vehicle_id": "SPZ35", "trip_count": 726, "trip_share_pct": 6.3, "valid_trip_count": 578, "valid_share_pct": 79.6, "avg_trip_distance_km": 6.13, "dominant_category": "Diaľková (>50km)"}, {"vehicle_id": "SPZ15", "trip_count": 722, "trip_share_pct": 6.2, "valid_trip_count": 578, "valid_share_pct": 80.1, "avg_trip_distance_km": 6.88, "dominant_category": "Regionálna (5-50km)"}, {"vehicle_id": "SPZ22", "trip_count": 714, "trip_share_pct": 6.2, "valid_trip_count": 578, "valid_share_pct": 81.0, "avg_trip_distance_km": 3.81, "dominant_category": "Diaľková (>50km)"}, {"vehicle_id": "SPZ28", "trip_count": 707, "trip_share_pct": 6.1, "valid_trip_count": 565, "valid_share_pct": 79.9, "avg_trip_distance_km": 4.75, "dominant_category": "Diaľková (>50km)"}, {"vehicle_id": "SPZ31", "trip_count": 701, "trip_share_pct": 6.0, "valid_trip_count": 618, "valid_share_pct": 88.2, "avg_trip_distance_km": 1.94, "dominant_category": "Regionálna (5-50km)"}, {"vehicle_id": "SPZ39", "trip_count": 641, "trip_share_pct": 5.5, "valid_trip_count": 528, "valid_share_pct": 82.4, "avg_trip_distance_km": 5.77, "dominant_category": "Diaľková (>50km)"}, {"vehicle_id": "SPZ04", "trip_count": 631, "trip_share_pct": 5.4, "valid_trip_count": 476, "valid_share_pct": 75.4, "avg_trip_distance_km": 9.21, "dominant_category": "Diaľková (>50km)"}, {"vehicle_id": "SPZ27", "trip_count": 610, "trip_share_pct": 5.3, "valid_trip_count": 485, "valid_share_pct": 79.5, "avg_trip_distance_km": 1.68, "dominant_category": "Regionálna (5-50km)"}, {"vehicle_id": "SPZ20", "trip_count": 572, "trip_share_pct": 4.9, "valid_trip_count": 432, "valid_share_pct": 75.5, "avg_trip_distance_km": 1.14, "dominant_category": "Regionálna (5-50km)"}, {"vehicle_id": "SPZ01", "trip_count": 560, "trip_share_pct": 4.8, "valid_trip_count": 440, "valid_share_pct": 78.6, "avg_trip_distance_km": 9.29, "dominant_category": "Regionálna (5-50km)"}, {"vehicle_id": "SPZ33", "trip_count": 498, "trip_share_pct": 4.3, "valid_trip_count": 415, "valid_share_pct": 83.3, "avg_trip_distance_km": 6.63, "dominant_category": "Diaľková (>50km)"}, {"vehicle_id": "SPZ11", "trip_count": 423, "trip_share_pct": 3.6, "valid_trip_count": 333, "valid_share_pct": 78.7, "avg_trip_distance_km": 8.16, "dominant_category": "Diaľková (>50km)"}, {"vehicle_id": "SPZ25", "trip_count": 403, "trip_share_pct": 3.5, "valid_trip_count": 337, "valid_share_pct": 83.6, "avg_trip_distance_km": 17.07, "dominant_category": "Diaľková (>50km)"}, {"vehicle_id": "SPZ14", "trip_count": 341, "trip_share_pct": 2.9, "valid_trip_count": 288, "valid_share_pct": 84.5, "avg_trip_distance_km": 4.95, "dominant_category": "Diaľková (>50km)"}], "route_table": [{"route_summary_label": "48.35812,17.57765 → 48.35631,17.56390", "tableau_route_label": "48358121,17577653 → 48356308,17563899", "record_count": 2, "avg_distance_km": 1.04}, {"route_summary_label": "49.30884,20.69869 → 49.30828,20.69867", "tableau_route_label": "49308835,20698693 → 49308277,20698671", "record_count": 2, "avg_distance_km": 0.06}, {"route_summary_label": "48.19653,18.59430 → 48.19639,18.59447", "tableau_route_label": "48196534,18594296 → 48196394,18594468", "record_count": 2, "avg_distance_km": 0.02}, {"route_summary_label": "48.33532,19.67048 → 48.33530,19.67042", "tableau_route_label": "48335322,19670484 → 483353,1967042", "record_count": 2, "avg_distance_km": 0.01}, {"route_summary_label": "49.01087,21.25977 → 49.01089,21.25983", "tableau_route_label": "49010874,21259768 → 49010885,21259832", "record_count": 2, "avg_distance_km": 0.0}, {"route_summary_label": "49.30886,20.69867 → 49.30882,20.69869", "tableau_route_label": "49308857,20698671 → 49308824,20698693", "record_count": 2, "avg_distance_km": 0.0}, {"route_summary_label": "49.01084,21.25975 → 49.01085,21.25979", "tableau_route_label": "49010842,21259747 → 49010852,21259789", "record_count": 2, "avg_distance_km": 0.0}, {"route_summary_label": "48.33535,19.67044 → 48.33533,19.67046", "tableau_route_label": "48335354,19670441 → 48335333,19670463", "record_count": 2, "avg_distance_km": 0.0}], "comment": "Počet jázd v HTML je zrovnaný na COUNT([SPZ]) = 11601. Najvyťaženejšie vozidlo podľa počtu jázd je SPZ26 (902), najmenej jázd má SPZ14 (341). Najsilnejší deň je St. Pri zapnutom filtri validných jázd ostáva 9399 z 11601 záznamov (81,0 %). Najčastejšia kategória je Diaľková (>50km) (5248). Najvyšší podiel validných jázd má SPZ31 (88,2 %)."}, "material": {"kpi": {"Celkovy pocet pohybov": 644106, "Pocet materialov": 690, "Pocet prefixov": 26, "Celkove mnozstvo": 177585193.0, "Priemerne mnozstvo": 275.7, "Median mnozstva": 9.0}, "totals": {"zero_quantity_record_count": 172, "top_quantity_month": "11/2024", "top_quantity_month_value": 14860462.0}, "charts": {"pohyby_podla_mesiaca": [{"label": "01/2023", "value": 15607}, {"label": "02/2023", "value": 17784}, {"label": "03/2023", "value": 17506}, {"label": "04/2023", "value": 19262}, {"label": "05/2023", "value": 15525}, {"label": "06/2023", "value": 22083}, {"label": "07/2023", "value": 12414}, {"label": "08/2023", "value": 20760}, {"label": "09/2023", "value": 16839}, {"label": "10/2023", "value": 21991}, {"label": "11/2023", "value": 20648}, {"label": "12/2023", "value": 14137}, {"label": "01/2024", "value": 18943}, {"label": "02/2024", "value": 17058}, {"label": "03/2024", "value": 15972}, {"label": "04/2024", "value": 20626}, {"label": "05/2024", "value": 24514}, {"label": "06/2024", "value": 18419}, {"label": "07/2024", "value": 18749}, {"label": "08/2024", "value": 18894}, {"label": "09/2024", "value": 18517}, {"label": "10/2024", "value": 18006}, {"label": "11/2024", "value": 22162}, {"label": "12/2024", "value": 15889}, {"label": "01/2025", "value": 17830}, {"label": "02/2025", "value": 15613}, {"label": "03/2025", "value": 21538}, {"label": "04/2025", "value": 16639}, {"label": "05/2025", "value": 14805}, {"label": "06/2025", "value": 17279}, {"label": "07/2025", "value": 16541}, {"label": "08/2025", "value": 14925}, {"label": "09/2025", "value": 19400}, {"label": "10/2025", "value": 17018}, {"label": "11/2025", "value": 17505}, {"label": "12/2025", "value": 12708}], "mnozstvo_podla_mesiaca": [{"label": "01/2023", "value": 3823686.4}, {"label": "02/2023", "value": 5478163.8}, {"label": "03/2023", "value": 4520633.0}, {"label": "04/2023", "value": 4327146.3}, {"label": "05/2023", "value": 2997929.1}, {"label": "06/2023", "value": 10192120.3}, {"label": "07/2023", "value": 3801198.5}, {"label": "08/2023", "value": 3829967.4}, {"label": "09/2023", "value": 4440291.3}, {"label": "10/2023", "value": 5569909.3}, {"label": "11/2023", "value": 4236907.8}, {"label": "12/2023", "value": 3381396.7}, {"label": "01/2024", "value": 3959627.3}, {"label": "02/2024", "value": 3285653.0}, {"label": "03/2024", "value": 4210198.1}, {"label": "04/2024", "value": 4176014.2}, {"label": "05/2024", "value": 4830601.6}, {"label": "06/2024", "value": 4271110.7}, {"label": "07/2024", "value": 4438020.9}, {"label": "08/2024", "value": 7070982.1}, {"label": "09/2024", "value": 4407621.0}, {"label": "10/2024", "value": 4943206.5}, {"label": "11/2024", "value": 14860462.0}, {"label": "12/2024", "value": 4816259.5}, {"label": "01/2025", "value": 3838995.1}, {"label": "02/2025", "value": 4318182.2}, {"label": "03/2025", "value": 5191899.2}, {"label": "04/2025", "value": 4337430.0}, {"label": "05/2025", "value": 3609948.3}, {"label": "06/2025", "value": 4593243.0}, {"label": "07/2025", "value": 4273112.2}, {"label": "08/2025", "value": 4243907.4}, {"label": "09/2025", "value": 5997463.3}, {"label": "10/2025", "value": 5375715.8}, {"label": "11/2025", "value": 4978159.1}, {"label": "12/2025", "value": 4958030.3}], "top_prefixy_podla_pohybov": [{"label": "MAT07111", "value": 273548}, {"label": "MAT07110", "value": 108754}, {"label": "MAT07697", "value": 59033}, {"label": "MAT07309", "value": 50332}, {"label": "MAT07711", "value": 32345}, {"label": "MAT07107", "value": 28155}, {"label": "MAT07607", "value": 19820}, {"label": "MAT07565", "value": 18409}], "abc_segmenty": [{"label": "A", "value": 32}, {"label": "B", "value": 70}, {"label": "C", "value": 588}]}, "prefix_table": [{"material_prefix": "MAT07111", "movement_count": 273548, "movement_share_pct": 42.5, "total_quantity": 6895672.5, "quantity_share_pct": 3.9, "unique_material_count": 173, "profile": "frekventovany"}, {"material_prefix": "MAT07110", "movement_count": 108754, "movement_share_pct": 16.9, "total_quantity": 2930287.5, "quantity_share_pct": 1.7, "unique_material_count": 168, "profile": "frekventovany"}, {"material_prefix": "MAT07697", "movement_count": 59033, "movement_share_pct": 9.2, "total_quantity": 139738682.8, "quantity_share_pct": 78.7, "unique_material_count": 116, "profile": "objemovo dominantny"}, {"material_prefix": "MAT07309", "movement_count": 50332, "movement_share_pct": 7.8, "total_quantity": 6114972.0, "quantity_share_pct": 3.4, "unique_material_count": 13, "profile": "frekventovany"}, {"material_prefix": "MAT07711", "movement_count": 32345, "movement_share_pct": 5.0, "total_quantity": 663806.7, "quantity_share_pct": 0.4, "unique_material_count": 10, "profile": "frekventovany"}, {"material_prefix": "MAT07107", "movement_count": 28155, "movement_share_pct": 4.4, "total_quantity": 2334489.0, "quantity_share_pct": 1.3, "unique_material_count": 9, "profile": "stabilny"}, {"material_prefix": "MAT07607", "movement_count": 19820, "movement_share_pct": 3.1, "total_quantity": 435513.0, "quantity_share_pct": 0.2, "unique_material_count": 36, "profile": "sirsie portfolio"}, {"material_prefix": "MAT07565", "movement_count": 18409, "movement_share_pct": 2.9, "total_quantity": 1415490.0, "quantity_share_pct": 0.8, "unique_material_count": 16, "profile": "stabilny"}, {"material_prefix": "MAT07283", "movement_count": 14186, "movement_share_pct": 2.2, "total_quantity": 16059027.8, "quantity_share_pct": 9.0, "unique_material_count": 20, "profile": "sirsie portfolio"}, {"material_prefix": "MAT07624", "movement_count": 14045, "movement_share_pct": 2.2, "total_quantity": 228609.0, "quantity_share_pct": 0.1, "unique_material_count": 6, "profile": "stabilny"}], "comment": "Najaktivnejsi prefix podla poctu pohybov je MAT07111 (273548 pohybov). Podla celkoveho mnozstva jednoznacne dominuje MAT07697 (139,738,682.8). Najsilnejsi mesiac podla objemu je 11/2024."}, "pokrocilejsia_analytika": {"jazdy": {"potentially_inefficient_trip_count": 308, "short_trip_count": 2984, "near_zero_trip_count": 6353, "weekend_trip_count": 1403, "description": "Heuristika oznacuje zaznamy s trvanim aspon 30 minut a so zmenou polohy pod 0,5 km. Ide len o signal na kontrolu, nie o dokazanu neefektivitu.", "top_vehicle_shares": [{"vehicle_id": "SPZ14", "trip_count": 341, "inefficient_trip_count": 35, "inefficient_share_pct": 10.3}, {"vehicle_id": "SPZ27", "trip_count": 610, "inefficient_trip_count": 38, "inefficient_share_pct": 6.2}, {"vehicle_id": "SPZ28", "trip_count": 707, "inefficient_trip_count": 36, "inefficient_share_pct": 5.1}, {"vehicle_id": "SPZ33", "trip_count": 498, "inefficient_trip_count": 20, "inefficient_share_pct": 4.0}, {"vehicle_id": "SPZ11", "trip_count": 423, "inefficient_trip_count": 16, "inefficient_share_pct": 3.8}], "watch_vehicle": {"vehicle_id": "SPZ14", "share_pct": 10.3}}, "material": {"abc_summary": [{"abc_segment": "A", "unique_material_count": 32, "movement_count": 76205, "movement_share_pct": 11.8, "total_quantity": 141595188.2, "quantity_share_pct": 79.7}, {"abc_segment": "B", "unique_material_count": 70, "movement_count": 279774, "movement_share_pct": 43.4, "total_quantity": 27054940.5, "quantity_share_pct": 15.2}, {"abc_segment": "C", "unique_material_count": 588, "movement_count": 288127, "movement_share_pct": 44.7, "total_quantity": 8935064.0, "quantity_share_pct": 5.0}], "zero_quantity_record_count": 172, "description": "Pouzita je jednoducha ABC segmentacia podla kumulativneho podielu na celkovom mnozstve. Je interpretovatelnejsia ako clustering a lahsie sa obhajuje v studentskom projekte."}}, "porovnanie_html_vs_tableau": {"message": "RIDES sekcia v HTML je zosuladena s Tableau na urovni COUNT/COUNTD KPI, 6 kategorii jazd a logiky filtra Zobrazit iba validne jazdy. Plne mapove listy z Tableau HTML zamerne nenahradza interaktivnou mapou."}}</script>
   <script>
     const dashboard = JSON.parse(document.getElementById("dashboard-data").textContent);
     const chartTooltip = document.getElementById("chartTooltip");
@@ -1430,8 +1457,8 @@
       );
       drawDonutChart(
         "chartTripDistance",
-        dashboard.jazdy.charts.rozdelenie_podla_vzdialenosti,
-        [palette.accent2, palette.accent1, palette.accent3, palette.accent4, "#9f7aea"]
+        dashboard.jazdy.charts.kategorie_jazd_tableau,
+        [palette.accent2, palette.accent1, palette.accent3, palette.accent4, "#9f7aea", "#ffb86c"]
       );
       drawHorizontalBars(
         "chartTopVehicles",
