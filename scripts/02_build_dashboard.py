@@ -65,6 +65,21 @@ RIDES_MONTH_LABELS_SHORT = {
     12: "Dec",
 }
 
+MATERIAL_MONTH_LABELS_COMPACT = {
+    1: "Ja",
+    2: "Fe",
+    3: "Ma",
+    4: "Ap",
+    5: "My",
+    6: "Jn",
+    7: "Jl",
+    8: "Au",
+    9: "Se",
+    10: "Oc",
+    11: "No",
+    12: "De",
+}
+
 JAZDY_FIELDS = [
     {
         "name": "DATUM",
@@ -396,6 +411,16 @@ def month_label(value: str) -> str:
 def rides_month_label_short(value: str) -> str:
     _, month = value.split("-")
     return RIDES_MONTH_LABELS_SHORT.get(int(month), month)
+
+
+def material_month_label_compact(value: str) -> str:
+    year, month = value.split("-")
+    return f"{MATERIAL_MONTH_LABELS_COMPACT.get(int(month), month)}{year[2:]}"
+
+
+def material_month_label_full(value: str) -> str:
+    year, month = value.split("-")
+    return f"{MONTH_NAMES_SK.get(int(month), month).capitalize()} {year}"
 
 
 def classify_prefix(row: pd.Series) -> str:
@@ -995,11 +1020,19 @@ def build_dashboard_data(jazdy: pd.DataFrame, material: pd.DataFrame) -> dict:
             },
             "charts": {
                 "pohyby_podla_mesiaca": [
-                    {"label": month_label(row.year_month), "value": int(row.movement_count)}
+                    {
+                        "label": material_month_label_compact(row.year_month),
+                        "tooltipLabel": material_month_label_full(row.year_month),
+                        "value": int(row.movement_count),
+                    }
                     for row in material_monthly.itertuples(index=False)
                 ],
                 "mnozstvo_podla_mesiaca": [
-                    {"label": month_label(row.year_month), "value": round(float(row.total_quantity), 1)}
+                    {
+                        "label": material_month_label_compact(row.year_month),
+                        "tooltipLabel": material_month_label_full(row.year_month),
+                        "value": round(float(row.total_quantity), 1),
+                    }
                     for row in material_monthly.itertuples(index=False)
                 ],
                 "top_prefixy_podla_pohybov": [
@@ -1340,7 +1373,12 @@ def build_html(dashboard: dict) -> str:
       <div class="grid-13">
         <div class="card canvas-card">
           <div class="card-title">ABC segmenty podla poctu materialov</div>
-          <canvas id="chartAbcSegments" height="260"></canvas>
+          <div class="donut-panel">
+            <div class="donut-canvas-wrap">
+              <canvas id="chartAbcSegments" height="260"></canvas>
+            </div>
+            <div id="chartAbcSegmentsLegend" class="donut-legend" aria-label="Legenda ABC segmentov"></div>
+          </div>
         </div>
         <div class="card canvas-card">
           <div class="card-title">Top prefixy podla poctu pohybov</div>
@@ -2606,7 +2644,7 @@ def build_html(dashboard: dict) -> str:
       return { canvas, ctx, width: rect.width, height };
     }
 
-    function fillRoundedRect(ctx, x, y, width, height, radius) {
+    function roundedRectPath(ctx, x, y, width, height, radius) {
       const r = Math.min(radius, width / 2, height / 2);
       ctx.beginPath();
       ctx.moveTo(x + r, y);
@@ -2615,7 +2653,15 @@ def build_html(dashboard: dict) -> str:
       ctx.arcTo(x, y + height, x, y, r);
       ctx.arcTo(x, y, x + width, y, r);
       ctx.closePath();
+    }
+
+    function fillRoundedRect(ctx, x, y, width, height, radius) {
+      roundedRectPath(ctx, x, y, width, height, radius);
       ctx.fill();
+    }
+
+    function getVisibleLabelStep(itemCount, maxVisibleLabels = 14) {
+      return Math.max(1, Math.ceil(itemCount / Math.max(1, maxVisibleLabels)));
     }
 
     function hideChartTooltip() {
@@ -2690,9 +2736,9 @@ def build_html(dashboard: dict) -> str:
 
       state.legendContainer.innerHTML = state.items.map((item, index) => {
         const value = Number(item.value);
-        const pct = Math.round((value / state.total) * 100);
+        const pctText = state.percentFormatter(value / state.total);
         const color = state.colors[index % state.colors.length];
-        const legendValue = `${state.formatter(value)} | ${pct}%`;
+        const legendValue = state.legendValueFormatter(item, value, pctText);
 
         return `
           <button
@@ -2783,11 +2829,12 @@ def build_html(dashboard: dict) -> str:
         ctx.stroke();
         ctx.restore();
 
+        const pctText = state.percentFormatter(value / state.total);
         state.geometry.push({
           startAngle,
           endAngle,
           label: item.label,
-          tooltipValue: `${state.formatter(value)} | ${Math.round((value / state.total) * 100)}%`,
+          tooltipValue: state.tooltipValueFormatter(item, value, pctText),
         });
 
         startAngle = endAngle;
@@ -2801,7 +2848,7 @@ def build_html(dashboard: dict) -> str:
       ctx.fillStyle = palette.textSoft;
       ctx.font = "10px DM Mono";
       ctx.textAlign = "center";
-      ctx.fillText("TOTAL", state.centerX, state.centerY - 4);
+      ctx.fillText(state.centerLabel, state.centerX, state.centerY - 4);
       ctx.fillStyle = palette.text;
       ctx.font = "bold 18px Syne";
       ctx.fillText(state.formatter(state.total), state.centerX, state.centerY + 20);
@@ -2903,6 +2950,15 @@ def build_html(dashboard: dict) -> str:
         geometry: [],
         rafId: 0,
       };
+      const percentDigits = options.percentDigits ?? 1;
+      state.centerLabel = options.centerLabel || "TOTAL";
+      state.ariaLabel = options.ariaLabel
+        || "Interaktívny donut graf. Fokusuj legendu pre zvýraznenie zodpovedajúceho segmentu.";
+      state.percentFormatter = options.percentFormatter
+        || ((ratio) => formatNumber(ratio * 100, percentDigits) + "%");
+      state.legendValueFormatter = options.legendValueFormatter
+        || ((item, value, pctText) => `${state.formatter(value)} | ${pctText}`);
+      state.tooltipValueFormatter = options.tooltipValueFormatter || state.legendValueFormatter;
 
       if (canvas.__interactiveDonutState?.rafId) {
         window.cancelAnimationFrame(canvas.__interactiveDonutState.rafId);
@@ -2910,10 +2966,7 @@ def build_html(dashboard: dict) -> str:
 
       canvas.__interactiveDonutState = state;
       canvas.setAttribute("role", "img");
-      canvas.setAttribute(
-        "aria-label",
-        "Kategórie jázd podľa Tableau. Fokusuj legendu pre zvýraznenie zodpovedajúceho segmentu."
-      );
+      canvas.setAttribute("aria-label", state.ariaLabel);
 
       renderInteractiveDonutLegend(state);
       updateInteractiveDonutLegend(state);
@@ -2968,66 +3021,159 @@ def build_html(dashboard: dict) -> str:
       const setup = prepCanvas(id);
       if (!setup || !items.length) return;
 
-      const { canvas, ctx, width, height } = setup;
-      const pad = { top: 20, right: 14, bottom: 40, left: 54 };
-      const chartWidth = width - pad.left - pad.right;
-      const chartHeight = height - pad.top - pad.bottom;
-      const maxValue = Math.max(...items.map((item) => Number(item.value))) * 1.12 || 1;
-      const step = chartWidth / items.length;
-      const barWidth = Math.max(10, Math.min(28, step * 0.62));
-      const hitBoxes = [];
+      const state = {
+        ...setup,
+        items,
+        color,
+        formatter,
+        options,
+        activeIndex: null,
+        hitBoxes: [],
+      };
 
-      ctx.strokeStyle = palette.grid;
-      ctx.fillStyle = palette.textSoft;
-      ctx.font = "10px DM Mono";
-      ctx.textAlign = "right";
+      function render() {
+        const { ctx, width, height } = state;
+        const pad = { top: 20, right: 14, bottom: 40, left: 54 };
+        const chartWidth = width - pad.left - pad.right;
+        const chartHeight = height - pad.top - pad.bottom;
+        const maxValue = Math.max(...items.map((item) => Number(item.value))) * 1.12 || 1;
+        const step = chartWidth / items.length;
+        const barWidth = Math.max(10, Math.min(28, step * 0.62));
+        const labelStep = getVisibleLabelStep(items.length, options.maxVisibleLabels || 14);
+        const hitBoxes = [];
 
-      for (let i = 0; i <= 4; i += 1) {
-        const y = pad.top + chartHeight - (chartHeight * i) / 4;
-        ctx.beginPath();
-        ctx.moveTo(pad.left, y);
-        ctx.lineTo(width - pad.right, y);
-        ctx.stroke();
-        ctx.fillText(formatter((maxValue * i) / 4), pad.left - 6, y + 3);
+        ctx.clearRect(0, 0, width, height);
+        ctx.strokeStyle = palette.grid;
+        ctx.fillStyle = palette.textSoft;
+        ctx.font = "10px DM Mono";
+        ctx.textAlign = "right";
+
+        for (let i = 0; i <= 4; i += 1) {
+          const y = pad.top + chartHeight - (chartHeight * i) / 4;
+          ctx.beginPath();
+          ctx.moveTo(pad.left, y);
+          ctx.lineTo(width - pad.right, y);
+          ctx.stroke();
+          ctx.fillText(formatter((maxValue * i) / 4), pad.left - 6, y + 3);
+        }
+
+        items.forEach((item, index) => {
+          const value = Number(item.value);
+          const baseBarHeight = (value / maxValue) * chartHeight;
+          const x = pad.left + index * step + (step - barWidth) / 2;
+          const lift = state.activeIndex === index ? 4 : 0;
+          const y = pad.top + chartHeight - baseBarHeight - lift;
+          const visibleHeight = Math.max(baseBarHeight + lift, 2);
+          const hasActive = state.activeIndex !== null;
+          const isActive = state.activeIndex === index;
+
+          ctx.save();
+          if (hasActive && !isActive) {
+            ctx.globalAlpha = 0.44;
+          }
+
+          const gradient = ctx.createLinearGradient(0, y, 0, y + visibleHeight);
+          gradient.addColorStop(0, isActive ? color : color + "dd");
+          gradient.addColorStop(1, isActive ? color + "66" : color + "33");
+          ctx.fillStyle = gradient;
+
+          if (isActive) {
+            ctx.shadowColor = color + "52";
+            ctx.shadowBlur = 22;
+            ctx.shadowOffsetY = 6;
+          }
+
+          fillRoundedRect(ctx, x, y, barWidth, visibleHeight, 5);
+          ctx.restore();
+
+          if (isActive) {
+            ctx.save();
+            ctx.strokeStyle = "rgba(235, 241, 251, 0.2)";
+            ctx.lineWidth = 1;
+            roundedRectPath(ctx, x, y, barWidth, visibleHeight, 5);
+            ctx.stroke();
+            ctx.restore();
+          }
+
+          if (options.tooltip) {
+            const tooltipFormatter = options.tooltipFormatter || formatter;
+            hitBoxes.push({
+              x: x - 2,
+              y,
+              width: barWidth + 4,
+              height: visibleHeight + 4,
+              label: item.tooltipLabel || item.label,
+              tooltipValue: tooltipFormatter(value, item),
+            });
+          }
+
+          if (index % labelStep === 0) {
+            ctx.fillStyle = palette.textSoft;
+            ctx.font = "10px DM Mono";
+            ctx.textAlign = "center";
+            ctx.fillText(item.label, x + barWidth / 2, height - 14);
+          }
+        });
+
+        state.hitBoxes = hitBoxes;
       }
 
-      items.forEach((item, index) => {
-        const value = Number(item.value);
-        const barHeight = (value / maxValue) * chartHeight;
-        const x = pad.left + index * step + (step - barWidth) / 2;
-        const y = pad.top + chartHeight - barHeight;
-        const visibleHeight = Math.max(barHeight, 2);
+      state.render = render;
+      const canvas = state.canvas;
+      canvas.__barChartState = state;
+      state.render();
 
-        const gradient = ctx.createLinearGradient(0, y, 0, y + barHeight);
-        gradient.addColorStop(0, color);
-        gradient.addColorStop(1, color + "33");
-        ctx.fillStyle = gradient;
-        fillRoundedRect(ctx, x, y, barWidth, visibleHeight, 5);
+      if (!options.tooltip) {
+        canvas.style.cursor = "default";
+        return;
+      }
 
-        if (options.tooltip) {
-          const tooltipFormatter = options.tooltipFormatter || formatter;
-          hitBoxes.push({
-            x,
-            y,
-            width: barWidth,
-            height: visibleHeight,
-            label: item.label,
-            tooltipValue: tooltipFormatter(value),
-          });
+      if (canvas.dataset.barChartHoverBound === "true") {
+        return;
+      }
+
+      canvas.dataset.barChartHoverBound = "true";
+      canvas.addEventListener("mousemove", (event) => {
+        const currentState = canvas.__barChartState;
+        if (!currentState) {
+          return;
         }
 
-        const showLabel = items.length <= 14 || index % 2 === 0;
-        if (showLabel) {
-          ctx.fillStyle = palette.textSoft;
-          ctx.font = "10px DM Mono";
-          ctx.textAlign = "center";
-          ctx.fillText(item.label, x + barWidth / 2, height - 14);
+        const rect = canvas.getBoundingClientRect();
+        const x = event.clientX - rect.left;
+        const y = event.clientY - rect.top;
+        const hitIndex = (currentState.hitBoxes || []).findIndex(
+          (item) =>
+            x >= item.x
+            && x <= item.x + item.width
+            && y >= item.y
+            && y <= item.y + item.height
+        );
+
+        const nextIndex = hitIndex === -1 ? null : hitIndex;
+        if (currentState.activeIndex !== nextIndex) {
+          currentState.activeIndex = nextIndex;
+          currentState.render();
         }
+
+        canvas.style.cursor = nextIndex === null ? "default" : "pointer";
+        if (nextIndex === null) {
+          hideChartTooltip();
+          return;
+        }
+
+        showChartTooltip(event, currentState.hitBoxes[nextIndex]);
       });
 
-      if (options.tooltip) {
-        bindChartHover(canvas, hitBoxes);
-      }
+      canvas.addEventListener("mouseleave", () => {
+        const currentState = canvas.__barChartState;
+        canvas.style.cursor = "default";
+        hideChartTooltip();
+        if (currentState && currentState.activeIndex !== null) {
+          currentState.activeIndex = null;
+          currentState.render();
+        }
+      });
     }
 
     function drawHorizontalBars(
@@ -3512,7 +3658,10 @@ def build_html(dashboard: dict) -> str:
         "chartTripDistance",
         view.charts.categories,
         [palette.accent2, palette.accent1, palette.accent3, palette.accent4, "#9f7aea", "#ffb86c"],
-        { legendId: "chartTripDistanceLegend" }
+        {
+          legendId: "chartTripDistanceLegend",
+          ariaLabel: "Kategórie jázd podľa Tableau. Fokusuj legendu pre zvýraznenie zodpovedajúceho segmentu.",
+        }
       );
       drawHorizontalBars(
         "chartTopVehicles",
@@ -3524,17 +3673,39 @@ def build_html(dashboard: dict) -> str:
     }
 
     function drawMaterialCharts() {
-      drawBarChart("chartMaterialMoves", dashboard.material.charts.pohyby_podla_mesiaca, palette.accent3);
+      drawBarChart(
+        "chartMaterialMoves",
+        dashboard.material.charts.pohyby_podla_mesiaca,
+        palette.accent3,
+        (value) => formatNumber(value, 0),
+        {
+          tooltip: true,
+          maxVisibleLabels: 12,
+          tooltipFormatter: (value) => `Počet pohybov: ${formatNumber(value, 0)}`,
+        }
+      );
       drawBarChart(
         "chartMaterialQty",
         dashboard.material.charts.mnozstvo_podla_mesiaca,
         palette.accent4,
-        (value) => formatCompact(value)
+        (value) => formatCompact(value),
+        {
+          tooltip: true,
+          maxVisibleLabels: 12,
+          tooltipFormatter: (value) => `Celkové množstvo: ${formatNumber(value, 1)}`,
+        }
       );
-      drawDonutChart(
+      drawInteractiveDonutChart(
         "chartAbcSegments",
         dashboard.material.charts.abc_segmenty,
-        [palette.accent1, palette.accent4, palette.accent3]
+        [palette.accent1, palette.accent4, palette.accent3],
+        {
+          legendId: "chartAbcSegmentsLegend",
+          ariaLabel: "ABC segmenty podľa počtu materiálov. Fokusuj legendu pre zvýraznenie zodpovedajúceho segmentu.",
+          percentDigits: 1,
+          legendValueFormatter: (item, value, pctText) => `${formatNumber(value, 0)} materiálov | ${pctText}`,
+          tooltipValueFormatter: (item, value, pctText) => `${formatNumber(value, 0)} materiálov | ${pctText}`,
+        }
       );
       drawHorizontalBars("chartTopPrefixes", dashboard.material.charts.top_prefixy_podla_pohybov, palette.accent3);
     }
