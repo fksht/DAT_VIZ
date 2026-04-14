@@ -205,25 +205,6 @@ def parse_quantity(value: object) -> float:
     return float(value)
 
 
-def parse_coordinate(value: object) -> float:
-    if pd.isna(value):
-        return np.nan
-
-    try:
-        integer = int(value)
-    except (TypeError, ValueError):
-        return np.nan
-
-    if integer <= 0:
-        return np.nan
-
-    digits = len(str(abs(integer)))
-    if digits <= 2:
-        return np.nan
-
-    return integer / (10 ** (digits - 2))
-
-
 def classify_abc(cumulative_share: float) -> str:
     if cumulative_share <= 0.80:
         return "A"
@@ -248,20 +229,6 @@ def classify_tableau_ride_category(distance_m: float) -> str:
     return "Diaľková (>50km)"
 
 
-def format_raw_coordinate(value: object) -> str:
-    if pd.isna(value):
-        return "?"
-
-    try:
-        numeric = float(value)
-    except (TypeError, ValueError):
-        return str(value)
-
-    if numeric.is_integer():
-        return str(int(numeric))
-    return str(value)
-
-
 def json_number_or_none(value: object) -> float | int | None:
     if pd.isna(value):
         return None
@@ -269,22 +236,6 @@ def json_number_or_none(value: object) -> float | int | None:
     if numeric.is_integer():
         return int(numeric)
     return numeric
-
-
-def build_tableau_route_label(row: pd.Series) -> str:
-    return (
-        f"{format_raw_coordinate(row['EW_START'])},{format_raw_coordinate(row['EL_START'])} "
-        f"→ {format_raw_coordinate(row['EW_END'])},{format_raw_coordinate(row['EL_END'])}"
-    )
-
-
-def build_normalized_route_label(row: pd.Series) -> str:
-    if pd.isna(row["start_lat"]) or pd.isna(row["start_lon"]) or pd.isna(row["end_lat"]) or pd.isna(row["end_lon"]):
-        return ""
-    return (
-        f"{row['start_lat']:.5f},{row['start_lon']:.5f} "
-        f"→ {row['end_lat']:.5f},{row['end_lon']:.5f}"
-    )
 
 
 def load_jazdy_dataset(path: Path) -> pd.DataFrame:
@@ -313,23 +264,11 @@ def load_jazdy_dataset(path: Path) -> pd.DataFrame:
     duration_minutes = (end_seconds - start_seconds) / 60
     duration_minutes = duration_minutes.where(duration_minutes >= 0, duration_minutes + 1440)
 
-    start_lat = df["EW_START"].apply(parse_coordinate)
-    start_lon = df["EL_START"].apply(parse_coordinate)
-    end_lat = df["EW_END"].apply(parse_coordinate)
-    end_lon = df["EL_END"].apply(parse_coordinate)
     tableau_lat_start = pd.to_numeric(df["EW_START"], errors="coerce") / 1_000_000
     tableau_lon_start = pd.to_numeric(df["EL_START"], errors="coerce") / 1_000_000
-    tableau_lat_end = pd.to_numeric(df["EW_END"], errors="coerce") / 1_000_000
-    tableau_lon_end = pd.to_numeric(df["EL_END"], errors="coerce") / 1_000_000
     distance_m = pd.to_numeric(df["DIST_START_END_M"], errors="coerce") / 1e9
     distance_km = distance_m / 1000
 
-    coord_valid = (
-        start_lat.between(47, 51)
-        & start_lon.between(12, 23)
-        & end_lat.between(47, 51)
-        & end_lon.between(12, 23)
-    )
     tableau_valid_trip = (
         tableau_lat_start.between(47, 51)
         & tableau_lon_start.between(12, 23)
@@ -353,23 +292,11 @@ def load_jazdy_dataset(path: Path) -> pd.DataFrame:
             "distance_km": distance_km,
             "ew_start_raw": pd.to_numeric(df["EW_START"], errors="coerce"),
             "el_start_raw": pd.to_numeric(df["EL_START"], errors="coerce"),
-            "start_lat": start_lat,
-            "start_lon": start_lon,
-            "end_lat": end_lat,
-            "end_lon": end_lon,
-            "coord_valid": coord_valid,
-            "tableau_lat_start": tableau_lat_start,
-            "tableau_lon_start": tableau_lon_start,
-            "tableau_lat_end": tableau_lat_end,
-            "tableau_lon_end": tableau_lon_end,
             "tableau_valid_trip": tableau_valid_trip,
             "ride_category_tableau": distance_m.apply(classify_tableau_ride_category),
-            "trasa_tableau": df.apply(build_tableau_route_label, axis=1),
         }
     )
 
-    cleaned.loc[~cleaned["coord_valid"], ["start_lat", "start_lon", "end_lat", "end_lon"]] = np.nan
-    cleaned["route_summary_label"] = cleaned.apply(build_normalized_route_label, axis=1)
     cleaned["near_zero_trip"] = cleaned["distance_m"] < 50
     cleaned["short_trip"] = (~cleaned["near_zero_trip"]) & (cleaned["distance_km"] < 5)
     cleaned["potentially_inefficient_trip"] = (
@@ -810,24 +737,6 @@ def build_dashboard_data(jazdy: pd.DataFrame, material: pd.DataFrame) -> dict:
         .rename_axis("ride_category")
         .reset_index(name="trip_count")
     )
-    top_routes = (
-        jazdy.loc[
-            jazdy["tableau_valid_trip"]
-            & jazdy["route_summary_label"].ne("")
-            & jazdy["distance_m"].gt(0)
-        ]
-        .groupby(["route_summary_label", "trasa_tableau"], as_index=False)
-        .agg(
-            record_count=("vehicle_id", "size"),
-            avg_distance_km=("distance_km", "mean"),
-        )
-        .sort_values(
-            ["record_count", "avg_distance_km", "route_summary_label"],
-            ascending=[False, False, True],
-        )
-        .head(8)
-    )
-
     material_monthly = (
         material.groupby("year_month", as_index=False)
         .agg(
@@ -946,7 +855,7 @@ def build_dashboard_data(jazdy: pd.DataFrame, material: pd.DataFrame) -> dict:
                     "DIST_START_END_M vyjadruje len priamu vzdialenost medzi startom a koncom, nie realnu trasu po cestach.",
                     "V datasete nie su adresy, dovod jazdy, naklady ani prepravovany material.",
                     "Tableau validita jazdy je viazana na startove suradnice po prepocte EW_START / 1000000 a EL_START / 1000000.",
-                    "Workbook ma aj priestorove pohlady, ale HTML ich sumarizuje len textovo a cez tabulku tras podla suradnic.",
+                    "Priestorove polia sa hodia len na kontrolu validity startu a hruby odhad presunu, nie na obhajitelnu analyzu presnych tras.",
                 ],
                 "answerable": [
                     "vytazenost vozidiel a rozlozenie jazd v case",
@@ -998,7 +907,6 @@ def build_dashboard_data(jazdy: pd.DataFrame, material: pd.DataFrame) -> dict:
                 "weekend_trip_count": int(jazdy["weekend"].sum()),
                 "tableau_valid_share_pct": round(float(jazdy["tableau_valid_trip"].mean() * 100), 1),
                 "tableau_invalid_share_pct": round(float((~jazdy["tableau_valid_trip"]).mean() * 100), 1),
-                "route_summary_ready_count": int(jazdy["route_summary_label"].ne("").sum()),
             },
             "tableau": {
                 "parameter_name": "Zobraziť iba validné jazdy",
@@ -1047,15 +955,6 @@ def build_dashboard_data(jazdy: pd.DataFrame, material: pd.DataFrame) -> dict:
                 }
                 for row in trips_per_vehicle.itertuples(index=False)
             ],
-            "route_table": [
-                {
-                    "route_summary_label": row.route_summary_label,
-                    "tableau_route_label": row.trasa_tableau,
-                    "record_count": int(row.record_count),
-                    "avg_distance_km": round(float(row.avg_distance_km), 2),
-                }
-                for row in top_routes.itertuples(index=False)
-            ],
             "raw_records": [
                 {
                     "year_month": row.year_month,
@@ -1065,7 +964,6 @@ def build_dashboard_data(jazdy: pd.DataFrame, material: pd.DataFrame) -> dict:
                     "ew_start_raw": json_number_or_none(row.ew_start_raw),
                     "el_start_raw": json_number_or_none(row.el_start_raw),
                     "ride_category_tableau": row.ride_category_tableau,
-                    "route_summary_label": row.route_summary_label,
                 }
                 for row in jazdy.itertuples(index=False)
             ],
@@ -1140,7 +1038,7 @@ def build_dashboard_data(jazdy: pd.DataFrame, material: pd.DataFrame) -> dict:
         "porovnanie_html_vs_tableau": {
             "message": (
                 "RIDES sekcia v HTML je zosuladena s Tableau na urovni COUNT/COUNTD KPI, 6 kategorii jazd a logiky "
-                "filtra Zobrazit iba validne jazdy. Plne mapove listy z Tableau HTML zamerne nenahradza interaktivnou mapou."
+                "filtra Zobrazit iba validne jazdy."
             )
         },
     }
@@ -2519,16 +2417,11 @@ def build_html(dashboard: dict) -> str:
       font-size: 12px;
     }
 
-    .recom-list,
-    .validation-list {
+    .recom-list {
       margin: 0;
       padding-left: 18px;
       color: var(--text-soft);
       font-size: 13px;
-    }
-
-    .validation-card {
-      margin-top: 18px;
     }
 
     @media (max-width: 960px) {
@@ -3385,7 +3278,6 @@ def build_html(dashboard: dict) -> str:
       const zeroDistanceCount = filteredRides.filter((ride) => ride.zeroDistance).length;
       const weekdayItems = getOrderedCountItems(rideWeekdayOrder, filteredRides, (ride) => ride.weekday_sk);
       const categoryItems = getOrderedCountItems(rideCategoryOrder, filteredRides, (ride) => ride.ride_category_tableau);
-      const routeReadyCount = filteredRides.filter((ride) => ride.route_summary_label).length;
 
       return {
         totalRideCount,
@@ -3398,7 +3290,6 @@ def build_html(dashboard: dict) -> str:
         topCategory: pickTopItem(categoryItems),
         topVehicle: vehicleBreakdown[0] || null,
         leastUsedVehicle: vehicleBreakdown[vehicleBreakdown.length - 1] || null,
-        routeReadyCount,
         showValidOnly,
       };
     }
@@ -3426,36 +3317,11 @@ def build_html(dashboard: dict) -> str:
       };
     }
 
-    function computeRideRoutes(filteredRides) {
-      const routeMap = new Map();
-
-      filteredRides.forEach((ride) => {
-        if (!ride.route_summary_label) {
-          return;
-        }
-        incrementCounter(routeMap, ride.route_summary_label);
-      });
-
-      return [...routeMap.entries()]
-        .map(([routeSummaryLabel, recordCount]) => ({
-          routeSummaryLabel,
-          recordCount
-        }))
-        .sort((a, b) => {
-          if (b.recordCount !== a.recordCount) {
-            return b.recordCount - a.recordCount;
-          }
-          return a.routeSummaryLabel.localeCompare(b.routeSummaryLabel, "sk");
-        })
-        .slice(0, 8);
-    }
-
     function buildRideView(showValidOnly) {
       const filteredRides = getFilteredRides(showValidOnly);
       const vehicleBreakdown = computeVehicleBreakdown(filteredRides);
       const metrics = computeRideMetrics(filteredRides, vehicleBreakdown, showValidOnly);
       const charts = computeRideCharts(filteredRides, vehicleBreakdown);
-      const routes = computeRideRoutes(filteredRides);
 
       return {
         showValidOnly,
@@ -3463,7 +3329,6 @@ def build_html(dashboard: dict) -> str:
         metrics,
         charts,
         vehicles: vehicleBreakdown,
-        routes,
         summary: buildRideSummary(metrics)
       };
     }
@@ -3546,41 +3411,12 @@ def build_html(dashboard: dict) -> str:
         item.dominantCategory
       ]));
 
-      const routeRows = view.routes.map((item) => ([
-        item.routeSummaryLabel,
-        formatNumber(item.recordCount, 0)
-      ]));
-
       return `
         ${renderRideTableCard(
           "Vyťaženosť vozidiel",
           ["Vozidlo", "Počet jázd", "Podiel zo všetkých", "Validné jazdy", "Podiel validných", "Dominantná kategória"],
-          vehicleRows,
-          "Vyťaženosť je vždy počítaná z aktuálne zvoleného módu, nie z pevne predpripravených agregácií."
+          vehicleRows
         )}
-
-        <div class="grid-2">
-          ${renderRideTableCard(
-            "Top trasy podľa počtu záznamov",
-            ["Trasa podľa štart/cieľ súradníc", "Záznamy"],
-            routeRows,
-            "Tabuľka zoraďuje coordinate-based štart/cieľ páry len z práve zobrazeného datasetu jázd."
-          )}
-
-          <div class="card">
-            <div class="card-title">Priestorové pohľady z Tableau</div>
-            <p class="card-intro">
-              Tableau má mapové listy, ale HTML ostáva pri textovej súradnicovej sumarizácii, aby z priamej vzdialenosti
-              netvrdilo skutočnú trasu po cestách.
-            </p>
-            <ul class="validation-list">
-              <li>${view.showValidOnly ? "Zobrazené sú iba validné jazdy podľa Tableau bounds." : "Zobrazené sú všetky jazdy vrátane záznamov mimo validného rozsahu."}</li>
-              <li>Práve zobrazený dataset obsahuje ${formatNumber(view.metrics.totalRideCount, 0)} jázd.</li>
-              <li>${formatNumber(view.metrics.routeReadyCount, 0)} jázd má normalizovaný štart/cieľ pár použiteľný pre route summary.</li>
-              <li>Valid ride v HTML používa štartové bounds 16,5-23,6 / 47,7-49,7 po delení EW_START a EL_START hodnotou 1 000 000.</li>
-            </ul>
-          </div>
-        </div>
       `;
     }
 
@@ -3627,7 +3463,7 @@ def build_html(dashboard: dict) -> str:
 
         <div class="insight">
           <strong>Rychla interpretacia:</strong>
-          V tomto móde sa KPI, grafy, tabuľky aj route summary rátajú z toho istého filtrovaného datasetu jázd.
+          V tomto móde sa KPI, grafy aj tabuľka rátajú z toho istého filtrovaného datasetu jázd.
         </div>
       `;
     }
