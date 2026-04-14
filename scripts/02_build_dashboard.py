@@ -262,6 +262,15 @@ def format_raw_coordinate(value: object) -> str:
     return str(value)
 
 
+def json_number_or_none(value: object) -> float | int | None:
+    if pd.isna(value):
+        return None
+    numeric = float(value)
+    if numeric.is_integer():
+        return int(numeric)
+    return numeric
+
+
 def build_tableau_route_label(row: pd.Series) -> str:
     return (
         f"{format_raw_coordinate(row['EW_START'])},{format_raw_coordinate(row['EL_START'])} "
@@ -342,6 +351,8 @@ def load_jazdy_dataset(path: Path) -> pd.DataFrame:
             "stoppage_min": df["DOBA_STATIA_MIN"].apply(parse_decimal_or_scaled),
             "distance_m": distance_m,
             "distance_km": distance_km,
+            "ew_start_raw": pd.to_numeric(df["EW_START"], errors="coerce"),
+            "el_start_raw": pd.to_numeric(df["EL_START"], errors="coerce"),
             "start_lat": start_lat,
             "start_lon": start_lon,
             "end_lat": end_lat,
@@ -470,6 +481,270 @@ def classify_prefix(row: pd.Series) -> str:
     return "stabilny"
 
 
+def classify_material_segment(row: pd.Series) -> tuple[str, str]:
+    quantity_share_pct = float(row["quantity_share_pct"])
+    movement_share_pct = float(row["movement_share_pct"])
+    active_months = int(row["active_months"])
+    peak_month_share_pct = float(row["peak_month_share_pct"])
+
+    if quantity_share_pct >= 5 or movement_share_pct >= 7:
+        if quantity_share_pct >= 5:
+            return "Kritické", "nesu aspon 5 % celkoveho objemu"
+        return "Kritické", "patria medzi frekvencne najvytazenejsie prefixy"
+
+    if active_months < 12 or peak_month_share_pct >= 35:
+        if active_months < 12:
+            return "Rizikové", "aktivita je kratka alebo epizodicka"
+        return "Rizikové", "aktivita je silno koncentrovana do jedneho mesiaca"
+
+    if active_months >= 30 and movement_share_pct >= 1 and peak_month_share_pct < 10:
+        return "Stabilné", "maju pravidelnu aktivitu napriec obdobiami"
+
+    return "Pomalyobrátkové", "maju nizku frekvenciu aj nizky objem"
+
+
+def compute_advanced_ride_analytics(jazdy: pd.DataFrame, trips_per_vehicle: pd.DataFrame) -> dict:
+    # This goes beyond descriptive reporting because it ranks manual-review priority using a transparent,
+    # rule-based score instead of only listing counts. The result is heuristic and explicitly not a proof of waste.
+    short_trip_counts = (
+        jazdy.groupby("vehicle_id", as_index=False)
+        .agg(short_trip_count=("short_trip", "sum"))
+    )
+    ride_review = trips_per_vehicle.merge(short_trip_counts, on="vehicle_id", how="left")
+    ride_review["short_trip_count"] = ride_review["short_trip_count"].fillna(0).astype(int)
+    ride_review["short_share_pct"] = (
+        ride_review["short_trip_count"] / ride_review["trip_count"] * 100
+    ).round(1)
+    ride_review["review_score"] = (
+        ride_review["inefficient_share_pct"] * 0.5
+        + ride_review["near_zero_share_pct"] * 0.3
+        + ride_review["short_share_pct"] * 0.2
+    ).round(1)
+    ride_review["priority_band"] = np.select(
+        [
+            ride_review["review_score"] >= 25,
+            ride_review["review_score"] >= 20,
+        ],
+        [
+            "Vysoká priorita",
+            "Stredná priorita",
+        ],
+        default="Nižšia priorita",
+    )
+    ride_review = ride_review.sort_values(
+        ["review_score", "inefficient_share_pct", "trip_count", "vehicle_id"],
+        ascending=[False, False, False, True],
+    )
+
+    total_flagged = int(jazdy["potentially_inefficient_trip"].sum())
+    high_priority = ride_review.loc[ride_review["review_score"] >= 25].copy()
+    flagged_in_high_priority = int(high_priority["inefficient_trip_count"].sum())
+    flagged_focus_share_pct = (
+        flagged_in_high_priority / total_flagged * 100 if total_flagged else 0
+    )
+    top_vehicle = ride_review.iloc[0]
+
+    return {
+        "question": "Ktoré vozidlá koncentrujú najvyšší podiel potenciálne neefektívnych a nízkohodnotných jázd?",
+        "method_title": "Heuristické prioritizačné skóre pre manuálnu kontrolu",
+        "method_points": [
+            "Jazda je označená ako potenciálne neefektívna, ak trvá aspoň 30 minút a posun je menší ako 0,5 km.",
+            "Na úrovni vozidla sa počíta skóre = 50 % podiel označených jázd + 30 % near-zero podiel + 20 % podiel krátkych jázd do 5 km.",
+            "Skóre je len proxy pre manuálnu kontrolu. Neznamená dokázanú neefektivitu ani finančnú škodu.",
+        ],
+        "summary_cards": [
+            {
+                "label": "Označené jazdy",
+                "value": total_flagged,
+                "sub": "signál na manuálnu kontrolu",
+                "format": "int",
+            },
+            {
+                "label": "Vozidlá s vysokou prioritou",
+                "value": int(len(high_priority)),
+                "sub": "skóre aspoň 25 bodov",
+                "format": "int",
+            },
+            {
+                "label": "Koncentrácia signálu",
+                "value": round(flagged_focus_share_pct, 1),
+                "sub": "podiel označených jázd v top prioritných vozidlách",
+                "format": "pct1",
+            },
+        ],
+        "chart": [
+            {
+                "label": row.vehicle_id,
+                "value": float(row.review_score),
+            }
+            for row in ride_review.head(8).itertuples(index=False)
+        ],
+        "table": [
+            {
+                "vehicle_id": row.vehicle_id,
+                "trip_count": int(row.trip_count),
+                "inefficient_trip_count": int(row.inefficient_trip_count),
+                "inefficient_share_pct": float(row.inefficient_share_pct),
+                "near_zero_share_pct": float(row.near_zero_share_pct),
+                "short_share_pct": float(row.short_share_pct),
+                "review_score": float(row.review_score),
+                "priority_band": row.priority_band,
+            }
+            for row in ride_review.head(8).itertuples(index=False)
+        ],
+        "result_text": (
+            f"Najvyššie skóre má vozidlo {top_vehicle.vehicle_id} ({top_vehicle.review_score:.1f}). "
+            f"Vozidlá s vysokou prioritou držia {flagged_focus_share_pct:.1f} % všetkých označených jázd."
+        ),
+        "interpretation": (
+            f"Manuálnu kontrolu sa oplatí začať pri vozidle {top_vehicle.vehicle_id}, pretože kombinuje vysoký podiel "
+            f"označených jázd s vysokou koncentráciou near-zero a krátkych presunov. Tento výstup je vhodný ako "
+            f"obhájiteľná priorita pre dispečing alebo fleet management."
+        ),
+        "recommendations": [
+            "Najprv preveriť top vozidlá s vysokou prioritou a porovnať ich s pracovným režimom alebo typom vozidla.",
+            "Near-zero a krátke jazdy čítať ako prevádzkový signál, nie ako automatický dôkaz neefektivity.",
+            "Ak sa tie isté vozidlá opakujú aj v ďalších obdobiach, skóre sa dá použiť ako jednoduchý monitoring proxy.",
+        ],
+    }
+
+
+def compute_advanced_material_analytics(material: pd.DataFrame, prefix_summary: pd.DataFrame) -> dict:
+    # This is advanced analytics because it converts raw movement/quantity history into explicit operational classes.
+    # The rules are transparent and interpretable, which is more defensible here than a black-box clustering model.
+    segmented = prefix_summary.copy()
+    segment_meta = segmented.apply(classify_material_segment, axis=1, result_type="expand")
+    segmented["segment"] = segment_meta[0]
+    segmented["segment_reason"] = segment_meta[1]
+
+    segment_order = ["Kritické", "Stabilné", "Rizikové", "Pomalyobrátkové"]
+    segmented["segment_order"] = segmented["segment"].map({name: idx for idx, name in enumerate(segment_order)})
+
+    segment_summary = (
+        segmented.groupby(["segment", "segment_order"], as_index=False)
+        .agg(
+            prefix_count=("material_prefix", "size"),
+            movement_count=("movement_count", "sum"),
+            quantity_share_pct=("quantity_share_pct", "sum"),
+        )
+        .sort_values("segment_order")
+    )
+    segment_summary["movement_share_pct"] = (
+        segment_summary["movement_count"] / len(material) * 100
+    ).round(1)
+
+    critical_prefix = segmented.sort_values(
+        ["quantity_share_pct", "movement_share_pct", "material_prefix"],
+        ascending=[False, False, True],
+    ).iloc[0]
+    risky_candidates = segmented.loc[segmented["segment"] == "Rizikové"].copy()
+    risky_prefix = (
+        risky_candidates.sort_values(
+            ["peak_month_share_pct", "movement_count", "material_prefix"],
+            ascending=[False, False, True],
+        ).iloc[0]
+        if not risky_candidates.empty
+        else None
+    )
+
+    priority_candidates = segmented.loc[segmented["segment"].isin(["Kritické", "Rizikové"])].copy()
+    if priority_candidates.empty:
+        priority_candidates = segmented.copy()
+    priority_candidates["priority_order"] = priority_candidates["segment"].map(
+        {"Kritické": 0, "Rizikové": 1}
+    ).fillna(2)
+    priority_prefixes = priority_candidates.sort_values(
+        ["priority_order", "quantity_share_pct", "peak_month_share_pct", "movement_count"],
+        ascending=[True, False, False, False],
+    ).head(10)
+
+    critical_summary = segment_summary.loc[segment_summary["segment"] == "Kritické"].iloc[0]
+    risky_summary_rows = segment_summary.loc[segment_summary["segment"] == "Rizikové"]
+    risky_summary = (
+        risky_summary_rows.iloc[0]
+        if not risky_summary_rows.empty
+        else pd.Series({"prefix_count": 0, "quantity_share_pct": 0.0, "movement_share_pct": 0.0})
+    )
+    risky_interpretation = (
+        f"zatiaľ čo prefix {risky_prefix.material_prefix} reprezentuje bursty alebo krátku históriu a zaslúži si "
+        f"samostatný monitoring."
+        if risky_prefix is not None
+        else "rizikový segment je v tomto exporte prázdny, čo znamená, že pravidlá nenašli epizodickú skupinu vyžadujúcu samostatný monitoring."
+    )
+
+    return {
+        "question": "Ktoré materiálové prefixy sú z pohľadu prevádzky stabilné, kritické, rizikové alebo pomalyobrátkové?",
+        "method_title": "Transparentná segmentácia prefixov podľa objemu, frekvencie a časovej koncentrácie",
+        "method_points": [
+            "Kritické prefixy nesú aspoň 5 % celkového objemu alebo patria medzi frekvenčne najvyťaženejšie prefixy nad 7 % pohybov.",
+            "Rizikové prefixy sú tie, ktoré majú krátku históriu do 12 aktívnych mesiacov alebo viac ako 35 % svojej aktivity v jednom mesiaci.",
+            "Stabilné prefixy sa hýbu pravidelne aspoň 30 mesiacov, držia aspoň 1 % pohybov a ich aktivita nie je koncentrovaná do jedného mesiaca. Ostatné sú pomalyobrátkové.",
+        ],
+        "summary_cards": [
+            {
+                "label": "Kritické prefixy",
+                "value": int(critical_summary.prefix_count),
+                "sub": "nesú najväčší operačný dopad",
+                "format": "int",
+            },
+            {
+                "label": "Podiel kritického objemu",
+                "value": round(float(critical_summary.quantity_share_pct), 1),
+                "sub": "percent z celkoveho mnozstva",
+                "format": "pct1",
+            },
+            {
+                "label": "Rizikové prefixy",
+                "value": int(risky_summary.prefix_count),
+                "sub": "epizodická alebo bursty aktivita",
+                "format": "int",
+            },
+        ],
+        "chart": [
+            {
+                "label": row.segment,
+                "value": float(row.quantity_share_pct),
+            }
+            for row in segment_summary.itertuples(index=False)
+        ],
+        "segment_table": [
+            {
+                "segment": row.segment,
+                "prefix_count": int(row.prefix_count),
+                "movement_share_pct": float(row.movement_share_pct),
+                "quantity_share_pct": float(row.quantity_share_pct),
+            }
+            for row in segment_summary.itertuples(index=False)
+        ],
+        "priority_table": [
+            {
+                "material_prefix": row.material_prefix,
+                "segment": row.segment,
+                "movement_share_pct": float(row.movement_share_pct),
+                "quantity_share_pct": float(row.quantity_share_pct),
+                "active_months": int(row.active_months),
+                "peak_month_share_pct": float(row.peak_month_share_pct),
+                "reason": row.segment_reason,
+            }
+            for row in priority_prefixes.itertuples(index=False)
+        ],
+        "result_text": (
+            f"Kritická skupina má iba {int(critical_summary.prefix_count)} prefixov, ale nesie "
+            f"{critical_summary.quantity_share_pct:.1f} % celkového objemu. Najväčší objemový dopad má "
+            f"{critical_prefix.material_prefix} ({critical_prefix.quantity_share_pct:.1f} %)."
+        ),
+        "interpretation": (
+            f"Segmentácia ukazuje, že najväčšie prevádzkové riziko je sústredené v malej skupine kritických prefixov, "
+            f"{risky_interpretation} Toto je vhodnejsie a obhajitelnejsie ako netransparentny clustering."
+        ),
+        "recommendations": [
+            "Kritické prefixy sledovať oddelene, lebo nesú väčšinu objemu alebo frekvencie a majú najväčší dopad na prevádzku.",
+            "Rizikové prefixy porovnať s plánom nákupu alebo jednorazovými projektmi, aby sa odlíšila sezónnosť od abnormality.",
+            "Pomalyobrátkové prefixy použiť ako kandidáta na revíziu sortimentu alebo minimálnych zásob.",
+        ],
+    }
+
+
 def build_dashboard_data(jazdy: pd.DataFrame, material: pd.DataFrame) -> dict:
     jazdy["trip_date"] = pd.to_datetime(jazdy["trip_date"])
     material["movement_date"] = pd.to_datetime(material["movement_date"])
@@ -570,6 +845,19 @@ def build_dashboard_data(jazdy: pd.DataFrame, material: pd.DataFrame) -> dict:
         )
         .sort_values(["movement_count", "material_prefix"], ascending=[False, True])
     )
+    prefix_activity = (
+        material.groupby("material_prefix", as_index=False)
+        .agg(
+            active_months=("year_month", "nunique"),
+            zero_qty_count=("zero_quantity_record", "sum"),
+        )
+    )
+    prefix_peak_month = (
+        material.groupby(["material_prefix", "year_month"], as_index=False)
+        .agg(month_move_count=("material_number", "size"))
+        .groupby("material_prefix", as_index=False)
+        .agg(peak_month_count=("month_move_count", "max"))
+    )
     abc_summary = (
         material.groupby("abc_segment", as_index=False)
         .agg(
@@ -587,12 +875,23 @@ def build_dashboard_data(jazdy: pd.DataFrame, material: pd.DataFrame) -> dict:
     prefix_summary["quantity_share_pct"] = (
         prefix_summary["total_quantity"] / total_material_quantity * 100
     ).round(1)
+    prefix_summary = prefix_summary.merge(prefix_activity, on="material_prefix", how="left")
+    prefix_summary = prefix_summary.merge(prefix_peak_month, on="material_prefix", how="left")
+    prefix_summary["zero_qty_share_pct"] = (
+        prefix_summary["zero_qty_count"] / prefix_summary["movement_count"] * 100
+    ).round(2)
+    prefix_summary["peak_month_share_pct"] = (
+        prefix_summary["peak_month_count"] / prefix_summary["movement_count"] * 100
+    ).round(1)
     prefix_summary["profile"] = prefix_summary.apply(classify_prefix, axis=1)
 
     abc_summary["movement_share_pct"] = (abc_summary["movement_count"] / len(material) * 100).round(1)
     abc_summary["quantity_share_pct"] = (
         abc_summary["total_quantity"] / total_material_quantity * 100
     ).round(1)
+
+    advanced_ride_analytics = compute_advanced_ride_analytics(jazdy, trips_per_vehicle)
+    advanced_material_analytics = compute_advanced_material_analytics(material, prefix_summary)
 
     most_used_vehicle = trips_per_vehicle.iloc[0]
     least_used_vehicle = trips_per_vehicle.iloc[-1]
@@ -757,6 +1056,19 @@ def build_dashboard_data(jazdy: pd.DataFrame, material: pd.DataFrame) -> dict:
                 }
                 for row in top_routes.itertuples(index=False)
             ],
+            "raw_records": [
+                {
+                    "year_month": row.year_month,
+                    "weekday_num": int(row.weekday_num),
+                    "weekday_sk": row.weekday_sk,
+                    "vehicle_id": row.vehicle_id,
+                    "ew_start_raw": json_number_or_none(row.ew_start_raw),
+                    "el_start_raw": json_number_or_none(row.el_start_raw),
+                    "ride_category_tableau": row.ride_category_tableau,
+                    "route_summary_label": row.route_summary_label,
+                }
+                for row in jazdy.itertuples(index=False)
+            ],
             "comment": (
                 f"Počet jázd v HTML je zrovnaný na COUNT([SPZ]) = {int(len(jazdy))}. "
                 f"Najvyťaženejšie vozidlo podľa počtu jázd je {most_used_vehicle.vehicle_id} ({int(most_used_vehicle.trip_count)}), "
@@ -822,50 +1134,8 @@ def build_dashboard_data(jazdy: pd.DataFrame, material: pd.DataFrame) -> dict:
             ),
         },
         "pokrocilejsia_analytika": {
-            "jazdy": {
-                "potentially_inefficient_trip_count": int(jazdy["potentially_inefficient_trip"].sum()),
-                "short_trip_count": int(jazdy["short_trip"].sum()),
-                "near_zero_trip_count": int(jazdy["near_zero_trip"].sum()),
-                "weekend_trip_count": int(jazdy["weekend"].sum()),
-                "description": (
-                    "Heuristika oznacuje zaznamy s trvanim aspon 30 minut a so zmenou polohy pod 0,5 km. "
-                    "Ide len o signal na kontrolu, nie o dokazanu neefektivitu."
-                ),
-                "top_vehicle_shares": [
-                    {
-                        "vehicle_id": row.vehicle_id,
-                        "trip_count": int(row.trip_count),
-                        "inefficient_trip_count": int(row.inefficient_trip_count),
-                        "inefficient_share_pct": float(row.inefficient_share_pct),
-                    }
-                    for row in trips_per_vehicle.sort_values(
-                        ["inefficient_share_pct", "trip_count", "vehicle_id"],
-                        ascending=[False, False, True],
-                    ).head(5).itertuples(index=False)
-                ],
-                "watch_vehicle": {
-                    "vehicle_id": highest_inefficient_vehicle.vehicle_id,
-                    "share_pct": float(highest_inefficient_vehicle.inefficient_share_pct),
-                },
-            },
-            "material": {
-                "abc_summary": [
-                    {
-                        "abc_segment": row.abc_segment,
-                        "unique_material_count": int(row.unique_material_count),
-                        "movement_count": int(row.movement_count),
-                        "movement_share_pct": float(row.movement_share_pct),
-                        "total_quantity": round(float(row.total_quantity), 1),
-                        "quantity_share_pct": float(row.quantity_share_pct),
-                    }
-                    for row in abc_summary.itertuples(index=False)
-                ],
-                "zero_quantity_record_count": int(material["zero_quantity_record"].sum()),
-                "description": (
-                    "Pouzita je jednoducha ABC segmentacia podla kumulativneho podielu na celkovom mnozstve. "
-                    "Je interpretovatelnejsia ako clustering a lahsie sa obhajuje v studentskom projekte."
-                ),
-            },
+            "jazdy": advanced_ride_analytics,
+            "material": advanced_material_analytics,
         },
         "porovnanie_html_vs_tableau": {
             "message": (
@@ -997,6 +1267,36 @@ def render_recommendation_list(items: list[str]) -> str:
     return "<ul class=\"recom-list\">" + "".join(f"<li>{escape(item)}</li>" for item in items) + "</ul>"
 
 
+def render_analysis_list(items: list[str], class_name: str = "analysis-list") -> str:
+    return f"<ul class=\"{class_name}\">" + "".join(f"<li>{escape(item)}</li>" for item in items) + "</ul>"
+
+
+def render_analysis_summary_cards(cards: list[dict]) -> str:
+    rendered = []
+    for card in cards:
+        value = card["value"]
+        value_format = card.get("format", "int")
+        if value_format == "pct1":
+            value_text = fmt_pct(float(value), 1)
+        elif value_format == "compact1":
+            value_text = fmt_compact(float(value), 1)
+        elif isinstance(value, float) and not float(value).is_integer():
+            value_text = fmt_decimal(float(value), 1)
+        else:
+            value_text = fmt_int(int(round(float(value))))
+
+        rendered.append(
+            f"""
+            <div class="analysis-summary-card">
+              <div class="analysis-summary-label">{escape(card["label"])}</div>
+              <div class="analysis-summary-value">{value_text}</div>
+              <div class="analysis-summary-sub">{escape(card["sub"])}</div>
+            </div>
+            """
+        )
+    return "".join(rendered)
+
+
 def build_html(dashboard: dict) -> str:
     understanding = dashboard["pochopenie_dat"]
     jazdy = dashboard["jazdy"]
@@ -1049,137 +1349,21 @@ def build_html(dashboard: dict) -> str:
     </section>
     """
 
-    jazdy_kpis = render_kpi_cards(
-        [
-            {
-                "label": "Počet jázd",
-                "value": fmt_int(jazdy["kpi"]["Pocet jazd"]),
-                "color": "var(--accent1)",
-            },
-            {
-                "label": "Počet vozidiel",
-                "value": fmt_int(jazdy["kpi"]["Pocet vozidiel"]),
-                "color": "var(--accent2)",
-            },
-            {
-                "label": "Priem. jazdy / vozidlo",
-                "value": fmt_int(jazdy["kpi"]["Priemer jazdy na vozidlo"]),
-                "color": "var(--accent3)",
-            },
-            {
-                "label": "Validné jazdy",
-                "value": fmt_int(jazdy["kpi"]["Validne jazdy Tableau"]),
-                "color": "var(--accent4)",
-            },
-            {
-                "label": "Mimo validného rozsahu",
-                "value": fmt_int(jazdy["kpi"]["Nevalidne jazdy Tableau"]),
-                "color": "var(--accent1)",
-            },
-            {
-                "label": "Žiadna jazda (0m)",
-                "value": fmt_int(jazdy["kpi"]["Ziadna jazda 0m"]),
-                "color": "var(--accent2)",
-            },
-        ]
-    )
-
-    vehicle_rows = [
-        [
-            item["vehicle_id"],
-            fmt_int(item["trip_count"]),
-            fmt_pct(item["trip_share_pct"]),
-            fmt_int(item["valid_trip_count"]),
-            fmt_pct(item["valid_share_pct"]),
-            item["dominant_category"],
-        ]
-        for item in jazdy["vehicle_table"][:10]
-    ]
-    route_rows = [
-        [
-            item["route_summary_label"],
-            fmt_int(item["record_count"]),
-        ]
-        for item in jazdy["route_table"]
-    ]
-
     jazdy_section = f"""
     <section id="tab-jazdy" class="section">
-      <div class="section-title">Jazdy vozidiel</div>
-
-      <div class="kpi-row">{jazdy_kpis}</div>
-
-      <div class="grid-2">
-        <div class="card canvas-card">
-          <div class="card-title">Vývoj jázd v čase</div>
-          <canvas id="chartMonthlyTrips" height="220"></canvas>
+      <div class="ride-section-head">
+        <div class="ride-header-row">
+          <div class="section-title">Jazdy vozidiel</div>
         </div>
-        <div class="card canvas-card">
-          <div class="card-title">Jazdy podľa dňa</div>
-          <canvas id="chartWeekdayTrips" height="220"></canvas>
+        <div class="ride-toolbar">
+          <div class="ride-toggle" role="group" aria-label="Ride mode toggle">
+            <button type="button" class="ride-toggle-btn active" data-ride-mode="valid" aria-pressed="true">Valid rides only</button>
+            <button type="button" class="ride-toggle-btn" data-ride-mode="all" aria-pressed="false">All rides</button>
+          </div>
         </div>
+        <p id="rideSummaryNote" class="ride-summary-note"></p>
       </div>
-
-      <div class="grid-13">
-        <div class="card canvas-card">
-          <div class="card-title">Kategórie jázd podľa Tableau</div>
-          <canvas id="chartTripDistance" height="260"></canvas>
-        </div>
-        <div class="card canvas-card">
-          <div class="card-title">Vyťaženosť vozidiel podľa počtu jázd</div>
-          <canvas id="chartTopVehicles" height="260"></canvas>
-        </div>
-      </div>
-
-      {render_table(
-          "Vyťaženosť vozidiel",
-          [
-              "Vozidlo",
-              "Počet jázd",
-              "Podiel zo všetkých",
-              "Validné jazdy",
-              "Podiel validných",
-              "Dominantná kategória",
-          ],
-          vehicle_rows,
-          intro="Vyťaženosť je postavená na počte jázd na vozidlo; validné jazdy používajú rovnakú štartovú bounds logiku ako Tableau.",
-      )}
-
-      <div class="grid-2">
-        {render_table(
-            "Top trasy podľa počtu záznamov",
-            [
-                "Trasa podľa štart/cieľ súradníc",
-                "Záznamy",
-            ],
-            route_rows,
-            intro=(
-                "Pre čitateľnosť sú súradnice normalizované. Tabuľka zoraďuje iba opakované coordinate-based páry, "
-                "nie cestná trasa ani adresa."
-            ),
-        )}
-
-        <div class="card">
-          <div class="card-title">Priestorové pohľady z Tableau</div>
-          <p class="card-intro">
-            Workbook obsahuje listy <strong>Mapa jázd</strong> a <strong>Mapa hustoty jázd</strong>. HTML ich
-            zámerne nenahrádza plnou mapou, ale drží rovnakú vstupnú logiku parametra
-            <strong>{escape(jazdy["tableau"]["parameter_name"])}</strong>.
-          </p>
-          <ul class="validation-list">
-            <li>Default parametra je zapnutý a používa logiku: {escape(jazdy["tableau"]["validity_logic"])}.</li>
-            <li>Pri zapnutom filtri ostáva {fmt_int(jazdy["kpi"]["Validne jazdy Tableau"])} štartov z {fmt_int(jazdy["kpi"]["Pocet jazd"])}.</li>
-            <li>Pre route summary sa dalo čitateľne normalizovať {fmt_int(jazdy["totals"]["route_summary_ready_count"])} záznamov so štart/cieľ párom.</li>
-            <li>HTML zámerne neukazuje adresy ani skutočné trasy po cestách.</li>
-          </ul>
-        </div>
-      </div>
-
-      <div class="insight">
-        <strong>Rychla interpretacia:</strong>
-        V RIDES sekcii su KPI, kategorie jazd a validacny filter teraz zladene s Tableau. Pri mape a trasach zostava HTML len pri
-        coordinate-based sumarizacii, aby nepretvaralo surovu priamu vzdialenost na realnu cestnu trasu.
-      </div>
+      <div id="ridesSectionContent"></div>
     </section>
     """
 
@@ -1289,130 +1473,181 @@ def build_html(dashboard: dict) -> str:
     </section>
     """
 
-    trip_signal_tiles = render_signal_tiles(
-        [
-            {
-                "label": "Near-zero zaznamy",
-                "value": fmt_int(advanced["jazdy"]["near_zero_trip_count"]),
-                "sub": "samostatny filter pre interpretaciu",
-            },
-            {
-                "label": "Kratke jazdy < 5 km",
-                "value": fmt_int(advanced["jazdy"]["short_trip_count"]),
-                "sub": "bez near-zero zaznamov",
-            },
-            {
-                "label": "Oznacene heuristikou",
-                "value": fmt_int(advanced["jazdy"]["potentially_inefficient_trip_count"]),
-                "sub": "signal na manualnu kontrolu",
-            },
-            {
-                "label": "Vikendove zaznamy",
-                "value": fmt_int(advanced["jazdy"]["weekend_trip_count"]),
-                "sub": "So + Ne spolu",
-            },
-        ]
+    ride_summary_cards = render_analysis_summary_cards(advanced["jazdy"]["summary_cards"])
+    ride_method_list = render_analysis_list(advanced["jazdy"]["method_points"])
+    ride_recommendation_list = render_analysis_list(
+        advanced["jazdy"]["recommendations"], "analysis-list analysis-list-compact"
     )
-
-    vehicle_watch_rows = [
+    ride_review_rows = [
         [
             item["vehicle_id"],
             fmt_int(item["trip_count"]),
             fmt_int(item["inefficient_trip_count"]),
-            fmt_pct(item["inefficient_share_pct"]),
+            fmt_pct(item["inefficient_share_pct"], 1),
+            fmt_pct(item["near_zero_share_pct"], 1),
+            fmt_pct(item["short_share_pct"], 1),
+            fmt_decimal(item["review_score"], 1),
+            item["priority_band"],
         ]
-        for item in advanced["jazdy"]["top_vehicle_shares"]
+        for item in advanced["jazdy"]["table"]
     ]
 
-    abc_rows = [
+    material_summary_cards = render_analysis_summary_cards(advanced["material"]["summary_cards"])
+    material_method_list = render_analysis_list(advanced["material"]["method_points"])
+    material_recommendation_list = render_analysis_list(
+        advanced["material"]["recommendations"], "analysis-list analysis-list-compact"
+    )
+    material_segment_rows = [
         [
-            item["abc_segment"],
-            fmt_int(item["unique_material_count"]),
-            fmt_int(item["movement_count"]),
-            fmt_pct(item["movement_share_pct"]),
-            fmt_compact(item["total_quantity"], 1),
-            fmt_pct(item["quantity_share_pct"]),
+            item["segment"],
+            fmt_int(item["prefix_count"]),
+            fmt_pct(item["movement_share_pct"], 1),
+            fmt_pct(item["quantity_share_pct"], 1),
         ]
-        for item in advanced["material"]["abc_summary"]
+        for item in advanced["material"]["segment_table"]
+    ]
+    material_priority_rows = [
+        [
+            item["material_prefix"],
+            item["segment"],
+            fmt_pct(item["movement_share_pct"], 1),
+            fmt_pct(item["quantity_share_pct"], 1),
+            fmt_int(item["active_months"]),
+            fmt_pct(item["peak_month_share_pct"], 1),
+            item["reason"],
+        ]
+        for item in advanced["material"]["priority_table"]
     ]
 
     advanced_section = f"""
     <section id="tab-pokrocila" class="section">
-      <div class="section-title">Pokrocila analytika</div>
+      <div class="section-title">Pokročilejšia analytika</div>
       <p class="section-copy">
-        Tato cast nepretlaca zbytocne scenare. Zvyraznuje iba tie signaly, ktore sa daju obhajit na zaklade aktualnych datasetov.
+        Táto časť už neukazuje len opisné KPI. Pre každý dataset formuluje konkrétnu analytickú úlohu, stručne vysvetlí
+        metódu, zobrazí dátový výsledok a pridá interpretáciu, ktorú sa dá obhájiť pri prezentácii.
       </p>
 
-      <div class="grid-2">
-        <div class="adv-box">
-          <div class="card-title">Rizikove signaly v jazdach</div>
-          <p class="adv-copy">{escape(advanced["jazdy"]["description"])}</p>
-          <div class="signal-grid">{trip_signal_tiles}</div>
+      <div class="analysis-report">
+        <div class="analysis-head">
+          <div class="analysis-kicker">Dataset 1 | Jazdy vozidiel</div>
+          <div class="card-title">Pokročilá úloha: identifikácia vozidiel s podozrivou neefektivitou</div>
+          <div class="analysis-label">Analytická otázka</div>
+          <p class="analysis-question">{escape(advanced["jazdy"]["question"])}</p>
+        </div>
+
+        <div class="analysis-grid">
+          <div class="analysis-block">
+            <div class="analysis-block-title">Metóda</div>
+            <div class="analysis-method-title">{escape(advanced["jazdy"]["method_title"])}</div>
+            {ride_method_list}
+          </div>
+          <div class="analysis-block">
+            <div class="analysis-block-title">Výsledok v skratke</div>
+            <p class="analysis-body">{escape(advanced["jazdy"]["result_text"])}</p>
+            <div class="analysis-summary-grid">{ride_summary_cards}</div>
+          </div>
+        </div>
+
+        <div class="analysis-grid">
+          <div class="card canvas-card">
+            <div class="card-title">Rebríček vozidiel podľa prioritizačného skóre</div>
+            <p class="table-intro">Vyššie skóre znamená väčšiu koncentráciu označených, near-zero a krátkych jázd.</p>
+            <canvas id="chartRideReviewScore" height="250"></canvas>
+          </div>
           {render_table(
-              "Vozidla s najvyssim podielom oznacenych zaznamov",
-              ["Vozidlo", "Vsetky zaznamy", "Oznacene", "Podiel"],
-              vehicle_watch_rows,
-              intro=(
-                  f"Na manualnu kontrolu je vhodne zacat pri vozidle "
-                  f"{advanced['jazdy']['watch_vehicle']['vehicle_id']} "
-                  f"({fmt_pct(advanced['jazdy']['watch_vehicle']['share_pct'])})."
-              ),
+              "Vozidlá na prioritný review",
+              [
+                  "Vozidlo",
+                  "Jazdy",
+                  "Označené",
+                  "Podiel označených",
+                  "Near-zero",
+                  "Krátke jazdy",
+                  "Prioritizačné skóre",
+                  "Priorita",
+              ],
+              ride_review_rows,
+              intro="Tabuľka spája viac signálov do jednej transparentnej priority pre manuálnu kontrolu vozidiel.",
           )}
         </div>
 
-        <div class="adv-box">
-          <div class="card-title">ABC segmentacia materialu</div>
-          <p class="adv-copy">{escape(advanced["material"]["description"])}</p>
+        <div class="analysis-grid">
+          <div class="analysis-callout">
+            <div class="analysis-block-title">Interpretácia</div>
+            <p class="analysis-body">{escape(advanced["jazdy"]["interpretation"])}</p>
+          </div>
+          <div class="analysis-callout analysis-callout-warm">
+            <div class="analysis-block-title">Odporúčanie</div>
+            {ride_recommendation_list}
+          </div>
+        </div>
+      </div>
+
+      <div class="analysis-report">
+        <div class="analysis-head">
+          <div class="analysis-kicker">Dataset 2 | Pohyby materiálu</div>
+          <div class="card-title">Pokročilá úloha: segmentácia prefixov podľa prevádzkového rizika</div>
+          <div class="analysis-label">Analytická otázka</div>
+          <p class="analysis-question">{escape(advanced["material"]["question"])}</p>
+        </div>
+
+        <div class="analysis-grid">
+          <div class="analysis-block">
+            <div class="analysis-block-title">Metóda</div>
+            <div class="analysis-method-title">{escape(advanced["material"]["method_title"])}</div>
+            {material_method_list}
+          </div>
+          <div class="analysis-block">
+            <div class="analysis-block-title">Výsledok v skratke</div>
+            <p class="analysis-body">{escape(advanced["material"]["result_text"])}</p>
+            <div class="analysis-summary-grid">{material_summary_cards}</div>
+          </div>
+        </div>
+
+        <div class="analysis-grid">
+          <div class="card canvas-card">
+            <div class="card-title">Podiel objemu podľa segmentu</div>
+            <p class="table-intro">Graf ukazuje, v ktorých segmentoch sa koncentruje celkové množstvo materiálu.</p>
+            <canvas id="chartMaterialSegmentsAdvanced" height="250"></canvas>
+          </div>
           {render_table(
-              "Segmenty A / B / C",
+              "Prehľad segmentov prefixov",
               [
                   "Segment",
-                  "Materialy",
-                  "Pohyby",
+                  "Prefixy",
                   "Podiel pohybov",
-                  "Celkove mnozstvo",
-                  "Podiel mnozstva",
+                  "Podiel množstva",
               ],
-              abc_rows,
-              intro=(
-                  f"Nulove mnozstvo sa v cistenych datach objavilo v "
-                  f"{fmt_int(advanced['material']['zero_quantity_record_count'])} zaznamoch."
-              ),
+              material_segment_rows,
+              intro="Segmenty oddeľujú stabilné skupiny od prefixov s vysokým dopadom alebo neštandardnou koncentráciou aktivity.",
           )}
         </div>
-      </div>
 
-      <div class="grid-2">
-        <div class="card canvas-card">
-          <div class="card-title">Podiel oznacenych zaznamov podla vozidla</div>
-          <canvas id="chartInefficientVehicles" height="220"></canvas>
-        </div>
-        <div class="card canvas-card">
-          <div class="card-title">Podiel mnozstva podla ABC segmentu</div>
-          <canvas id="chartAbcQtyShare" height="220"></canvas>
-        </div>
-      </div>
-
-      <div class="adv-box">
-        <div class="card-title">Odporucania pre finalny dashboard</div>
-        {render_recommendation_list(
+        {render_table(
+            "Prefixy na prioritný monitoring",
             [
-                "Drzat near-zero jazdy ako samostatny filter, nie miesat ich do hlavnych vzdialenostnych KPI.",
-                "V Tableau ukazat vedla seba pocet pohybov aj celkove mnozstvo, lebo kazdy pohlad hovori iny pribeh.",
-                "Na detailnej kontrole zacat pri vozidlach s najvyssim podielom heuristicky oznacenych zaznamov.",
-                "Pri materiale odlisit frekvencne dominantne prefixy od prefixov, ktore nesu vacsinu objemu.",
-            ]
+                "Prefix",
+                "Segment",
+                "Podiel pohybov",
+                "Podiel množstva",
+                "Aktívne mesiace",
+                "Peak mesiac",
+                "Dôvod",
+            ],
+            material_priority_rows,
+            intro="Tabuľka zvýrazňuje prefixy, ktoré majú najväčší objemový dopad alebo neštandardne koncentrované správanie.",
         )}
-      </div>
 
-      <div class="card validation-card">
-        <div class="card-title">HTML vs Tableau validation</div>
-        <p class="section-copy">{escape(dashboard["porovnanie_html_vs_tableau"]["message"])}</p>
-        <ul class="validation-list">
-          <li>RIDES KPI v HTML su pocitane ako COUNT([SPZ]), COUNTD([SPZ]) a ROUND(COUNT([SPZ]) / COUNTD([SPZ]), 0).</li>
-          <li>Kategorie jazd pouzivaju tych istych 6 bucketov ako Tableau a validny start pouziva bounds 47-51 / 12-23.</li>
-          <li>Mapove listy ostavaju v HTML len ako textove a tabulkove zhrnutie; pri finalnej obhajobe ma prednost Tableau.</li>
-        </ul>
+        <div class="analysis-grid">
+          <div class="analysis-callout">
+            <div class="analysis-block-title">Interpretácia</div>
+            <p class="analysis-body">{escape(advanced["material"]["interpretation"])}</p>
+          </div>
+          <div class="analysis-callout analysis-callout-warm">
+            <div class="analysis-block-title">Odporúčanie</div>
+            {material_recommendation_list}
+          </div>
+        </div>
       </div>
     </section>
     """
@@ -1665,6 +1900,72 @@ def build_html(dashboard: dict) -> str:
       font-size: 14px;
     }
 
+    .ride-section-head {
+      margin-bottom: 18px;
+    }
+
+    .ride-header-row {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 14px;
+      flex-wrap: wrap;
+      margin-bottom: 12px;
+    }
+
+    .ride-toolbar {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 14px;
+      flex-wrap: wrap;
+      margin-bottom: 10px;
+    }
+
+    .ride-toggle {
+      display: inline-flex;
+      align-items: center;
+      gap: 4px;
+      padding: 4px;
+      border-radius: 999px;
+      border: 1px solid var(--border);
+      background: rgba(13, 24, 43, 0.8);
+      box-shadow: var(--shadow);
+    }
+
+    .ride-toggle-btn {
+      appearance: none;
+      border: 0;
+      border-radius: 999px;
+      background: transparent;
+      color: var(--text-dim);
+      cursor: pointer;
+      font-family: var(--font-head);
+      font-size: 13px;
+      font-weight: 700;
+      letter-spacing: 0.01em;
+      padding: 10px 16px;
+      transition: background 0.18s ease, color 0.18s ease, transform 0.18s ease, box-shadow 0.18s ease;
+    }
+
+    .ride-toggle-btn:hover {
+      color: var(--text);
+      transform: translateY(-1px);
+    }
+
+    .ride-toggle-btn.active {
+      background: linear-gradient(135deg, rgba(0, 212, 255, 0.96), rgba(106, 239, 255, 0.88));
+      color: #04101c;
+      box-shadow: 0 10px 26px rgba(0, 212, 255, 0.22);
+    }
+
+    .ride-summary-note {
+      margin: 0;
+      color: var(--text-soft);
+      max-width: 1080px;
+      font-size: 14px;
+    }
+
     .grid-2,
     .grid-13,
     .kpi-row,
@@ -1685,7 +1986,7 @@ def build_html(dashboard: dict) -> str:
     }
 
     .kpi-row {
-      grid-template-columns: repeat(6, minmax(0, 1fr));
+      grid-template-columns: repeat(auto-fit, minmax(172px, 1fr));
       margin-bottom: 18px;
     }
 
@@ -1697,6 +1998,133 @@ def build_html(dashboard: dict) -> str:
     .signal-grid {
       grid-template-columns: repeat(2, minmax(0, 1fr));
       margin: 18px 0;
+    }
+
+    .analysis-report {
+      position: relative;
+      overflow: hidden;
+      margin-bottom: 24px;
+      padding: 24px;
+      border: 1px solid rgba(0, 212, 255, 0.16);
+      border-radius: var(--radius-lg);
+      background:
+        linear-gradient(180deg, rgba(12, 23, 40, 0.98), rgba(10, 18, 33, 0.96)),
+        radial-gradient(circle at top right, rgba(0, 212, 255, 0.08), transparent 30%);
+      box-shadow: var(--shadow);
+    }
+
+    .analysis-report::before {
+      content: "";
+      position: absolute;
+      inset: 0 0 auto;
+      height: 3px;
+      background: linear-gradient(90deg, var(--accent1), rgba(255, 122, 69, 0.6), transparent 82%);
+    }
+
+    .analysis-head {
+      margin-bottom: 18px;
+    }
+
+    .analysis-kicker,
+    .analysis-label,
+    .analysis-block-title,
+    .analysis-summary-label {
+      font-family: var(--font-mono);
+      font-size: 10px;
+      letter-spacing: 1.2px;
+      text-transform: uppercase;
+    }
+
+    .analysis-kicker {
+      color: var(--accent1);
+      margin-bottom: 8px;
+    }
+
+    .analysis-label,
+    .analysis-block-title,
+    .analysis-summary-label {
+      color: var(--text-dim);
+    }
+
+    .analysis-question {
+      margin: 8px 0 0;
+      max-width: 980px;
+      font-family: var(--font-head);
+      font-size: clamp(22px, 2.3vw, 30px);
+      line-height: 1.22;
+      letter-spacing: -0.02em;
+    }
+
+    .analysis-grid {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 18px;
+      margin-bottom: 18px;
+    }
+
+    .analysis-block,
+    .analysis-callout {
+      padding: 20px;
+      border-radius: var(--radius-md);
+      border: 1px solid rgba(88, 118, 165, 0.2);
+      background: linear-gradient(180deg, rgba(17, 30, 52, 0.96), rgba(13, 24, 43, 0.94));
+    }
+
+    .analysis-method-title {
+      margin: 6px 0 0;
+      font-family: var(--font-head);
+      font-size: 18px;
+      line-height: 1.2;
+    }
+
+    .analysis-body {
+      margin: 8px 0 0;
+      color: var(--text-soft);
+      font-size: 14px;
+      max-width: none;
+    }
+
+    .analysis-list {
+      margin: 12px 0 0;
+      padding-left: 18px;
+      color: var(--text-soft);
+      font-size: 13px;
+    }
+
+    .analysis-list-compact {
+      margin-top: 8px;
+    }
+
+    .analysis-summary-grid {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 14px;
+      margin-top: 18px;
+    }
+
+    .analysis-summary-card {
+      padding: 16px;
+      border-radius: var(--radius-md);
+      border: 1px solid rgba(88, 118, 165, 0.18);
+      background: linear-gradient(180deg, rgba(20, 34, 56, 0.98), rgba(14, 25, 43, 0.96));
+    }
+
+    .analysis-summary-value {
+      margin-top: 8px;
+      font-family: var(--font-head);
+      font-size: 28px;
+      line-height: 1;
+    }
+
+    .analysis-summary-sub {
+      margin-top: 6px;
+      color: var(--text-soft);
+      font-size: 12px;
+    }
+
+    .analysis-callout-warm {
+      border-color: rgba(255, 122, 69, 0.26);
+      background: linear-gradient(180deg, rgba(35, 25, 25, 0.96), rgba(24, 19, 24, 0.94));
     }
 
     .card,
@@ -1897,6 +2325,106 @@ def build_html(dashboard: dict) -> str:
       display: block;
     }
 
+    .donut-panel {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) 250px;
+      gap: 18px;
+      align-items: center;
+      min-height: 260px;
+    }
+
+    .donut-canvas-wrap {
+      min-width: 0;
+    }
+
+    .donut-legend {
+      display: grid;
+      gap: 10px;
+      align-content: center;
+    }
+
+    .donut-legend-item {
+      appearance: none;
+      width: 100%;
+      display: grid;
+      grid-template-columns: 10px minmax(0, 1fr);
+      column-gap: 12px;
+      row-gap: 3px;
+      align-items: start;
+      padding: 12px 14px;
+      border: 1px solid rgba(88, 118, 165, 0.22);
+      border-radius: 16px;
+      background: linear-gradient(180deg, rgba(17, 30, 52, 0.92), rgba(12, 22, 38, 0.94));
+      box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.02);
+      color: inherit;
+      cursor: pointer;
+      text-align: left;
+      transition:
+        border-color 0.18s ease,
+        background 0.18s ease,
+        transform 0.18s ease,
+        box-shadow 0.18s ease,
+        opacity 0.18s ease;
+    }
+
+    .donut-legend-item:hover {
+      transform: translateY(-1px);
+    }
+
+    .donut-legend-item:focus-visible {
+      outline: 0;
+      border-color: rgba(0, 212, 255, 0.58);
+      box-shadow:
+        0 0 0 3px rgba(0, 212, 255, 0.14),
+        0 14px 28px rgba(0, 0, 0, 0.2);
+    }
+
+    .donut-legend-item.active {
+      border-color: rgba(0, 212, 255, 0.34);
+      background: linear-gradient(180deg, rgba(21, 38, 66, 0.98), rgba(14, 26, 46, 0.96));
+      box-shadow:
+        inset 0 1px 0 rgba(255, 255, 255, 0.03),
+        0 16px 30px rgba(0, 0, 0, 0.18);
+    }
+
+    .donut-legend-item.dim {
+      border-color: rgba(88, 118, 165, 0.1);
+      background: linear-gradient(180deg, rgba(11, 19, 33, 0.82), rgba(9, 16, 29, 0.86));
+    }
+
+    .donut-legend-swatch {
+      width: 10px;
+      height: 10px;
+      border-radius: 999px;
+      margin-top: 4px;
+      box-shadow: 0 0 0 3px rgba(255, 255, 255, 0.03);
+    }
+
+    .donut-legend-label {
+      color: var(--text);
+      font-family: var(--font-body);
+      font-size: 13px;
+      font-weight: 700;
+      line-height: 1.25;
+    }
+
+    .donut-legend-meta {
+      color: var(--text-soft);
+      font-family: var(--font-mono);
+      font-size: 10px;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+    }
+
+    .donut-legend-item.dim .donut-legend-label,
+    .donut-legend-item.dim .donut-legend-meta {
+      color: #7688a0;
+    }
+
+    .donut-legend-item.dim .donut-legend-swatch {
+      opacity: 0.42;
+    }
+
     .chart-tooltip {
       position: fixed;
       left: 0;
@@ -2003,18 +2531,6 @@ def build_html(dashboard: dict) -> str:
       margin-top: 18px;
     }
 
-    .footer-note {
-      margin-top: 24px;
-      color: var(--text-dim);
-      font-size: 12px;
-    }
-
-    @media (max-width: 1180px) {
-      .kpi-row {
-        grid-template-columns: repeat(3, minmax(0, 1fr));
-      }
-    }
-
     @media (max-width: 960px) {
       header,
       main {
@@ -2029,18 +2545,28 @@ def build_html(dashboard: dict) -> str:
 
       .grid-2,
       .grid-13,
-      .insight-grid {
+      .insight-grid,
+      .analysis-grid {
         grid-template-columns: 1fr;
       }
 
       .meta-strip {
         grid-template-columns: 1fr;
       }
+
+      .donut-panel {
+        grid-template-columns: 1fr;
+      }
+
+      .donut-legend {
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+      }
     }
 
     @media (max-width: 760px) {
       .kpi-row,
-      .signal-grid {
+      .signal-grid,
+      .analysis-summary-grid {
         grid-template-columns: 1fr;
       }
 
@@ -2055,6 +2581,10 @@ def build_html(dashboard: dict) -> str:
       .tab {
         padding-left: 10px;
         padding-right: 10px;
+      }
+
+      .donut-legend {
+        grid-template-columns: 1fr;
       }
     }
   </style>
@@ -2074,7 +2604,7 @@ def build_html(dashboard: dict) -> str:
         <button class="tab active" data-tab="pochopenie" aria-selected="true">Pochopenie dat</button>
         <button class="tab" data-tab="jazdy" aria-selected="false">Jazdy vozidiel</button>
         <button class="tab" data-tab="material" aria-selected="false">Pohyby materialu</button>
-        <button class="tab" data-tab="pokrocila" aria-selected="false">Pokrocila analytika</button>
+        <button class="tab" data-tab="pokrocila" aria-selected="false">Pokročilejšia analytika</button>
       </div>
     </div>
   </div>
@@ -2084,7 +2614,6 @@ def build_html(dashboard: dict) -> str:
     __JAZDY_SECTION__
     __MATERIAL_SECTION__
     __ADVANCED_SECTION__
-    <div class="footer-note">Vystup je samostatny HTML export. Pri regeneracii sa prepise zo skriptu `scripts/02_build_dashboard.py`.</div>
   </main>
 
   <div id="chartTooltip" class="chart-tooltip" aria-hidden="true">
@@ -2111,6 +2640,21 @@ def build_html(dashboard: dict) -> str:
     };
 
     let activeTab = "pochopenie";
+    const rideSummaryNote = document.getElementById("rideSummaryNote");
+    const ridesSectionContent = document.getElementById("ridesSectionContent");
+    const ridesMonthOrder = [
+      "Jan", "Feb", "Mar", "Apr", "Maj", "Jun",
+      "Jul", "Aug", "Sep", "Okt", "Nov", "Dec"
+    ];
+    const rideWeekdayOrder = ["Po", "Ut", "St", "Stv", "Pi", "So", "Ne"];
+    const rideCategoryOrder = [
+      "Žiadna jazda (0m)",
+      "Parkovanie (<100m)",
+      "Krátka (100m-1km)",
+      "Mestská (1-5km)",
+      "Regionálna (5-50km)",
+      "Diaľková (>50km)"
+    ];
 
     function formatNumber(value, digits = 0) {
       return new Intl.NumberFormat("sk-SK", {
@@ -2131,6 +2675,24 @@ def build_html(dashboard: dict) -> str:
         return formatNumber(value / 1_000, 1) + "K";
       }
       return formatNumber(value, 0);
+    }
+
+    function formatPercent(value, digits = 1) {
+      return formatNumber(value, digits) + " %";
+    }
+
+    function escapeHtml(value) {
+      return String(value)
+        .replaceAll("&", "&amp;")
+        .replaceAll("<", "&lt;")
+        .replaceAll(">", "&gt;")
+        .replaceAll('"', "&quot;")
+        .replaceAll("'", "&#39;");
+    }
+
+    function monthFromYearMonth(value) {
+      const parts = String(value || "").split("-");
+      return Number(parts[1] || 0);
     }
 
     function prepCanvas(id) {
@@ -2225,6 +2787,281 @@ def build_html(dashboard: dict) -> str:
       canvas.addEventListener("mouseleave", () => {
         canvas.style.cursor = "default";
         hideChartTooltip();
+      });
+    }
+
+    function renderInteractiveDonutLegend(state) {
+      if (!state.legendContainer) {
+        return;
+      }
+
+      state.legendContainer.innerHTML = state.items.map((item, index) => {
+        const value = Number(item.value);
+        const pct = Math.round((value / state.total) * 100);
+        const color = state.colors[index % state.colors.length];
+        const legendValue = `${state.formatter(value)} | ${pct}%`;
+
+        return `
+          <button
+            type="button"
+            class="donut-legend-item"
+            aria-label="${escapeHtml(item.label)}: ${escapeHtml(legendValue)}"
+            data-donut-index="${index}"
+          >
+            <span class="donut-legend-swatch" style="background:${color}"></span>
+            <span class="donut-legend-label">${escapeHtml(item.label)}</span>
+            <span class="donut-legend-meta">${escapeHtml(legendValue)}</span>
+          </button>
+        `;
+      }).join("");
+
+      state.legendItems = Array.from(state.legendContainer.querySelectorAll(".donut-legend-item"));
+
+      state.legendItems.forEach((button, index) => {
+        button.addEventListener("mouseenter", () => {
+          setInteractiveDonutSource(state, "legend", index);
+        });
+
+        button.addEventListener("mouseleave", () => {
+          setInteractiveDonutSource(state, "legend", null);
+        });
+
+        button.addEventListener("focus", () => {
+          setInteractiveDonutSource(state, "legend", index);
+        });
+
+        button.addEventListener("blur", () => {
+          setInteractiveDonutSource(state, "legend", null);
+        });
+      });
+    }
+
+    function updateInteractiveDonutLegend(state) {
+      if (!state.legendItems) {
+        return;
+      }
+
+      state.legendItems.forEach((button, index) => {
+        const isActive = state.activeIndex === index;
+        const shouldDim = state.activeIndex !== null && !isActive;
+        button.classList.toggle("active", isActive);
+        button.classList.toggle("dim", shouldDim);
+      });
+    }
+
+    function getInteractiveDonutActiveIndex(state) {
+      if (state.activeSources.legend !== null) {
+        return state.activeSources.legend;
+      }
+      return state.activeSources.canvas;
+    }
+
+    function renderInteractiveDonut(state) {
+      const { ctx, width, height } = state;
+      ctx.clearRect(0, 0, width, height);
+      ctx.lineJoin = "round";
+
+      let startAngle = state.startAngle;
+      state.geometry = [];
+
+      state.items.forEach((item, index) => {
+        const value = Number(item.value);
+        const slice = (value / state.total) * Math.PI * 2;
+        const endAngle = startAngle + slice;
+        const midAngle = startAngle + slice / 2;
+        const progress = state.sliceProgress[index] || 0;
+        const explodeOffset = 10 * progress;
+        const translateX = Math.cos(midAngle) * explodeOffset;
+        const translateY = Math.sin(midAngle) * explodeOffset - (1.5 * progress);
+        const isActive = state.activeIndex === index;
+        const hasActive = state.activeIndex !== null;
+
+        ctx.save();
+        ctx.translate(translateX, translateY);
+        ctx.globalAlpha = hasActive && !isActive ? 0.28 : 1;
+        ctx.beginPath();
+        ctx.arc(state.centerX, state.centerY, state.radius, startAngle, endAngle);
+        ctx.arc(state.centerX, state.centerY, state.innerRadius, endAngle, startAngle, true);
+        ctx.closePath();
+        ctx.fillStyle = state.colors[index % state.colors.length];
+        ctx.fill();
+        ctx.lineWidth = isActive ? 2 : 1;
+        ctx.strokeStyle = isActive ? "rgba(235, 241, 251, 0.28)" : "rgba(13, 24, 43, 0.78)";
+        ctx.stroke();
+        ctx.restore();
+
+        state.geometry.push({
+          startAngle,
+          endAngle,
+          label: item.label,
+          tooltipValue: `${state.formatter(value)} | ${Math.round((value / state.total) * 100)}%`,
+        });
+
+        startAngle = endAngle;
+      });
+
+      ctx.beginPath();
+      ctx.arc(state.centerX, state.centerY, state.innerRadius - 1, 0, Math.PI * 2);
+      ctx.fillStyle = palette.hole;
+      ctx.fill();
+
+      ctx.fillStyle = palette.textSoft;
+      ctx.font = "10px DM Mono";
+      ctx.textAlign = "center";
+      ctx.fillText("TOTAL", state.centerX, state.centerY - 4);
+      ctx.fillStyle = palette.text;
+      ctx.font = "bold 18px Syne";
+      ctx.fillText(state.formatter(state.total), state.centerX, state.centerY + 20);
+    }
+
+    function animateInteractiveDonut(state) {
+      state.rafId = 0;
+      let needsNextFrame = false;
+
+      state.sliceProgress = state.sliceProgress.map((progress, index) => {
+        const target = state.activeIndex === index ? 1 : 0;
+        const next = progress + ((target - progress) * 0.18);
+        if (Math.abs(target - next) > 0.01) {
+          needsNextFrame = true;
+        }
+        return next;
+      });
+
+      renderInteractiveDonut(state);
+
+      if (needsNextFrame) {
+        state.rafId = window.requestAnimationFrame(() => animateInteractiveDonut(state));
+      }
+    }
+
+    function ensureInteractiveDonutAnimation(state) {
+      if (state.rafId) {
+        return;
+      }
+
+      state.rafId = window.requestAnimationFrame(() => animateInteractiveDonut(state));
+    }
+
+    function setInteractiveDonutSource(state, source, index) {
+      if (!state) {
+        return;
+      }
+
+      state.activeSources[source] = index;
+      const nextActiveIndex = getInteractiveDonutActiveIndex(state);
+      if (state.activeIndex === nextActiveIndex) {
+        updateInteractiveDonutLegend(state);
+        return;
+      }
+
+      state.activeIndex = nextActiveIndex;
+      updateInteractiveDonutLegend(state);
+      ensureInteractiveDonutAnimation(state);
+    }
+
+    function getInteractiveDonutHitIndex(state, x, y) {
+      const dx = x - state.centerX;
+      const dy = y - state.centerY;
+      const distance = Math.sqrt((dx * dx) + (dy * dy));
+      if (distance < state.innerRadius - 8 || distance > state.radius + 12) {
+        return null;
+      }
+
+      let angle = Math.atan2(dy, dx);
+      while (angle < state.startAngle) {
+        angle += Math.PI * 2;
+      }
+
+      const hit = (state.geometry || []).find((segment) => angle >= segment.startAngle && angle <= segment.endAngle);
+      return hit ? state.geometry.indexOf(hit) : null;
+    }
+
+    function drawInteractiveDonutChart(id, items, colors, options = {}) {
+      const setup = prepCanvas(id);
+      if (!setup || !items.length) return;
+
+      const { canvas, ctx, width, height } = setup;
+      const legendContainer = document.getElementById(options.legendId);
+      const formatter = options.formatter || ((value) => formatNumber(value, 0));
+      const total = items.reduce((sum, item) => sum + Number(item.value), 0) || 1;
+      const radius = Math.min(width * 0.28, height * 0.34);
+      const state = {
+        canvas,
+        ctx,
+        width,
+        height,
+        items,
+        colors,
+        legendContainer,
+        formatter,
+        total,
+        centerX: width / 2,
+        centerY: height / 2,
+        radius,
+        innerRadius: radius * 0.6,
+        startAngle: -Math.PI / 2,
+        activeIndex: null,
+        activeSources: {
+          canvas: null,
+          legend: null,
+        },
+        sliceProgress: Array(items.length).fill(0),
+        legendItems: [],
+        geometry: [],
+        rafId: 0,
+      };
+
+      if (canvas.__interactiveDonutState?.rafId) {
+        window.cancelAnimationFrame(canvas.__interactiveDonutState.rafId);
+      }
+
+      canvas.__interactiveDonutState = state;
+      canvas.setAttribute("role", "img");
+      canvas.setAttribute(
+        "aria-label",
+        "Kategórie jázd podľa Tableau. Fokusuj legendu pre zvýraznenie zodpovedajúceho segmentu."
+      );
+
+      renderInteractiveDonutLegend(state);
+      updateInteractiveDonutLegend(state);
+      renderInteractiveDonut(state);
+
+      if (canvas.dataset.interactiveDonutBound === "true") {
+        return;
+      }
+
+      canvas.dataset.interactiveDonutBound = "true";
+      canvas.addEventListener("mousemove", (event) => {
+        const currentState = canvas.__interactiveDonutState;
+        if (!currentState) {
+          return;
+        }
+
+        const rect = canvas.getBoundingClientRect();
+        const x = event.clientX - rect.left;
+        const y = event.clientY - rect.top;
+        const hitIndex = getInteractiveDonutHitIndex(currentState, x, y);
+
+        canvas.style.cursor = hitIndex === null ? "default" : "pointer";
+        setInteractiveDonutSource(currentState, "canvas", hitIndex);
+
+        if (hitIndex === null) {
+          hideChartTooltip();
+          return;
+        }
+
+        const segment = currentState.geometry[hitIndex];
+        showChartTooltip(event, {
+          label: segment.label,
+          tooltipValue: segment.tooltipValue,
+        });
+      });
+
+      canvas.addEventListener("mouseleave", () => {
+        const currentState = canvas.__interactiveDonutState;
+        canvas.style.cursor = "default";
+        hideChartTooltip();
+        setInteractiveDonutSource(currentState, "canvas", null);
       });
     }
 
@@ -2419,29 +3256,431 @@ def build_html(dashboard: dict) -> str:
       });
     }
 
-    function drawTripsCharts() {
+    // The HTML rides toggle mirrors the Tableau valid/all rides parameter.
+    // Every mode change rebuilds KPIs, charts, tables and summary text from one filtered rides array.
+    function isValidRide(record) {
+      // EW_START and EL_START are stored in this HTML dataset as integer-like coordinates with six implied decimals,
+      // so we scale by 1_000_000 here before applying the valid-ride bounds.
+      const latStart = Number(record.ew_start_raw) / 1000000;
+      const lonStart = Number(record.el_start_raw) / 1000000;
+      return Number.isFinite(latStart)
+        && Number.isFinite(lonStart)
+        && lonStart >= 16.5
+        && lonStart <= 23.6
+        && latStart >= 47.7
+        && latStart <= 49.7;
+    }
+
+    function enrichRideRecord(record) {
+      const latStart = Number(record.ew_start_raw) / 1000000;
+      const lonStart = Number(record.el_start_raw) / 1000000;
+      return {
+        ...record,
+        latStart,
+        lonStart,
+        validRide: isValidRide(record),
+        zeroDistance: record.ride_category_tableau === "Žiadna jazda (0m)"
+      };
+    }
+
+    const rideState = {
+      showValidOnly: true,
+      allRides: (dashboard.jazdy.raw_records || []).map((record) => enrichRideRecord(record)),
+      currentView: null
+    };
+
+    function incrementCounter(map, key) {
+      map.set(key, (map.get(key) || 0) + 1);
+    }
+
+    function getOrderedCountItems(order, records, getLabel) {
+      const counts = new Map(order.map((label) => [label, 0]));
+      records.forEach((record) => {
+        const label = getLabel(record);
+        if (counts.has(label)) {
+          counts.set(label, counts.get(label) + 1);
+        }
+      });
+      return order.map((label) => ({
+        label,
+        value: counts.get(label) || 0
+      }));
+    }
+
+    function pickTopItem(items) {
+      return [...items].sort((a, b) => {
+        if (Number(b.value) !== Number(a.value)) {
+          return Number(b.value) - Number(a.value);
+        }
+        return String(a.label).localeCompare(String(b.label), "sk");
+      })[0] || null;
+    }
+
+    function getFilteredRides(showValidOnly) {
+      return showValidOnly
+        ? rideState.allRides.filter((ride) => ride.validRide)
+        : [...rideState.allRides];
+    }
+
+    function computeVehicleBreakdown(filteredRides) {
+      const vehicleMap = new Map();
+
+      filteredRides.forEach((ride) => {
+        if (!vehicleMap.has(ride.vehicle_id)) {
+          vehicleMap.set(ride.vehicle_id, {
+            vehicle_id: ride.vehicle_id,
+            tripCount: 0,
+            validTripCount: 0,
+            categoryCounts: new Map()
+          });
+        }
+
+        const vehicle = vehicleMap.get(ride.vehicle_id);
+        vehicle.tripCount += 1;
+        if (ride.validRide) {
+          vehicle.validTripCount += 1;
+        }
+        incrementCounter(vehicle.categoryCounts, ride.ride_category_tableau);
+      });
+
+      const totalRideCount = filteredRides.length || 1;
+
+      return [...vehicleMap.values()]
+        .map((vehicle) => {
+          const dominantCategory = rideCategoryOrder
+            .map((label, index) => ({
+              label,
+              count: vehicle.categoryCounts.get(label) || 0,
+              index
+            }))
+            .sort((a, b) => {
+              if (b.count !== a.count) {
+                return b.count - a.count;
+              }
+              return a.index - b.index;
+            })[0]?.label || "Bez kategórie";
+
+          return {
+            vehicle_id: vehicle.vehicle_id,
+            tripCount: vehicle.tripCount,
+            tripSharePct: (vehicle.tripCount / totalRideCount) * 100,
+            validTripCount: vehicle.validTripCount,
+            validSharePct: vehicle.tripCount ? (vehicle.validTripCount / vehicle.tripCount) * 100 : 0,
+            dominantCategory
+          };
+        })
+        .sort((a, b) => {
+          if (b.tripCount !== a.tripCount) {
+            return b.tripCount - a.tripCount;
+          }
+          return a.vehicle_id.localeCompare(b.vehicle_id, "sk");
+        });
+    }
+
+    function computeRideMetrics(filteredRides, vehicleBreakdown, showValidOnly) {
+      const totalRideCount = filteredRides.length;
+      const vehicleCount = vehicleBreakdown.length;
+      const validRideCount = filteredRides.filter((ride) => ride.validRide).length;
+      const invalidRideCount = totalRideCount - validRideCount;
+      const zeroDistanceCount = filteredRides.filter((ride) => ride.zeroDistance).length;
+      const weekdayItems = getOrderedCountItems(rideWeekdayOrder, filteredRides, (ride) => ride.weekday_sk);
+      const categoryItems = getOrderedCountItems(rideCategoryOrder, filteredRides, (ride) => ride.ride_category_tableau);
+      const routeReadyCount = filteredRides.filter((ride) => ride.route_summary_label).length;
+
+      return {
+        totalRideCount,
+        vehicleCount,
+        averageRidesPerVehicle: vehicleCount ? Math.round(totalRideCount / vehicleCount) : 0,
+        validRideCount,
+        invalidRideCount,
+        zeroDistanceCount,
+        topWeekday: pickTopItem(weekdayItems),
+        topCategory: pickTopItem(categoryItems),
+        topVehicle: vehicleBreakdown[0] || null,
+        leastUsedVehicle: vehicleBreakdown[vehicleBreakdown.length - 1] || null,
+        routeReadyCount,
+        showValidOnly,
+      };
+    }
+
+    function computeRideCharts(filteredRides, vehicleBreakdown) {
+      const monthlyItems = ridesMonthOrder.map((label) => ({ label, value: 0 }));
+      const monthlyMap = new Map(ridesMonthOrder.map((label, index) => [label, index]));
+
+      filteredRides.forEach((ride) => {
+        const monthIndex = monthFromYearMonth(ride.year_month) - 1;
+        const label = ridesMonthOrder[monthIndex];
+        if (monthlyMap.has(label)) {
+          monthlyItems[monthlyMap.get(label)].value += 1;
+        }
+      });
+
+      return {
+        monthly: monthlyItems,
+        weekday: getOrderedCountItems(rideWeekdayOrder, filteredRides, (ride) => ride.weekday_sk),
+        categories: getOrderedCountItems(rideCategoryOrder, filteredRides, (ride) => ride.ride_category_tableau),
+        topVehicles: vehicleBreakdown.slice(0, 8).map((item) => ({
+          label: item.vehicle_id,
+          value: item.tripCount
+        }))
+      };
+    }
+
+    function computeRideRoutes(filteredRides) {
+      const routeMap = new Map();
+
+      filteredRides.forEach((ride) => {
+        if (!ride.route_summary_label) {
+          return;
+        }
+        incrementCounter(routeMap, ride.route_summary_label);
+      });
+
+      return [...routeMap.entries()]
+        .map(([routeSummaryLabel, recordCount]) => ({
+          routeSummaryLabel,
+          recordCount
+        }))
+        .sort((a, b) => {
+          if (b.recordCount !== a.recordCount) {
+            return b.recordCount - a.recordCount;
+          }
+          return a.routeSummaryLabel.localeCompare(b.routeSummaryLabel, "sk");
+        })
+        .slice(0, 8);
+    }
+
+    function buildRideView(showValidOnly) {
+      const filteredRides = getFilteredRides(showValidOnly);
+      const vehicleBreakdown = computeVehicleBreakdown(filteredRides);
+      const metrics = computeRideMetrics(filteredRides, vehicleBreakdown, showValidOnly);
+      const charts = computeRideCharts(filteredRides, vehicleBreakdown);
+      const routes = computeRideRoutes(filteredRides);
+
+      return {
+        showValidOnly,
+        filteredRides,
+        metrics,
+        charts,
+        vehicles: vehicleBreakdown,
+        routes,
+        summary: buildRideSummary(metrics)
+      };
+    }
+
+    function buildRideSummary(metrics) {
+      if (!metrics.totalRideCount) {
+        return "V zvolenom móde nie sú žiadne jazdy.";
+      }
+
+      const strongestDay = metrics.topWeekday ? metrics.topWeekday.label : "n/a";
+      const topCategory = metrics.topCategory ? metrics.topCategory.label : "n/a";
+      const topVehicle = metrics.topVehicle
+        ? `${metrics.topVehicle.vehicle_id} (${formatNumber(metrics.topVehicle.tripCount, 0)})`
+        : "n/a";
+      const scopeIntro = metrics.showValidOnly
+        ? "Zobrazené sú iba jazdy vo validnom rozsahu."
+        : "Zobrazené sú všetky jazdy vrátane záznamov mimo validného rozsahu.";
+
+      return `${scopeIntro} ${formatNumber(metrics.totalRideCount, 0)} jázd naprieč `
+        + `${formatNumber(metrics.vehicleCount, 0)} vozidlami. Najsilnejší deň je ${strongestDay}, `
+        + `najčastejšia kategória ${topCategory} a najvyťaženejšie vozidlo ${topVehicle}.`;
+    }
+
+    function renderRideKPIs(metrics) {
+      const cards = [
+        { label: "Počet jázd", value: formatNumber(metrics.totalRideCount, 0), color: palette.accent1 },
+        { label: "Počet vozidiel", value: formatNumber(metrics.vehicleCount, 0), color: palette.accent2 },
+        { label: "Priem. jazdy / vozidlo", value: formatNumber(metrics.averageRidesPerVehicle, 0), color: palette.accent3 },
+        { label: "Validné jazdy", value: formatNumber(metrics.validRideCount, 0), color: palette.accent4 },
+        { label: "Žiadna jazda (0m)", value: formatNumber(metrics.zeroDistanceCount, 0), color: palette.accent2 }
+      ];
+
+      if (!metrics.showValidOnly) {
+        cards.splice(4, 0, {
+          label: "Mimo validného rozsahu",
+          value: formatNumber(metrics.invalidRideCount, 0),
+          color: palette.accent1,
+        });
+      }
+
+      return `
+        <div class="kpi-row">
+          ${cards.map((card) => `
+            <div class="kpi-card" style="--accent:${card.color}">
+              <div class="kpi-label">${escapeHtml(card.label)}</div>
+              <div class="kpi-value">${escapeHtml(card.value)}</div>
+            </div>
+          `).join("")}
+        </div>
+      `;
+    }
+
+    function renderRideTableCard(title, headers, rows, intro = "") {
+      const headerHtml = headers.map((header) => `<th>${escapeHtml(header)}</th>`).join("");
+      const rowHtml = rows.length
+        ? rows.map((row) => `<tr>${row.map((cell) => `<td>${escapeHtml(cell)}</td>`).join("")}</tr>`).join("")
+        : `<tr><td colspan="${headers.length}">Bez dostupných záznamov</td></tr>`;
+
+      return `
+        <div class="card table-card">
+          <div class="card-title">${escapeHtml(title)}</div>
+          ${intro ? `<p class="table-intro">${escapeHtml(intro)}</p>` : ""}
+          <div class="table-wrap">
+            <table class="data-table">
+              <thead><tr>${headerHtml}</tr></thead>
+              <tbody>${rowHtml}</tbody>
+            </table>
+          </div>
+        </div>
+      `;
+    }
+
+    function renderRideTables(view) {
+      const vehicleRows = view.vehicles.slice(0, 10).map((item) => ([
+        item.vehicle_id,
+        formatNumber(item.tripCount, 0),
+        formatPercent(item.tripSharePct, 1),
+        formatNumber(item.validTripCount, 0),
+        formatPercent(item.validSharePct, 1),
+        item.dominantCategory
+      ]));
+
+      const routeRows = view.routes.map((item) => ([
+        item.routeSummaryLabel,
+        formatNumber(item.recordCount, 0)
+      ]));
+
+      return `
+        ${renderRideTableCard(
+          "Vyťaženosť vozidiel",
+          ["Vozidlo", "Počet jázd", "Podiel zo všetkých", "Validné jazdy", "Podiel validných", "Dominantná kategória"],
+          vehicleRows,
+          "Vyťaženosť je vždy počítaná z aktuálne zvoleného módu, nie z pevne predpripravených agregácií."
+        )}
+
+        <div class="grid-2">
+          ${renderRideTableCard(
+            "Top trasy podľa počtu záznamov",
+            ["Trasa podľa štart/cieľ súradníc", "Záznamy"],
+            routeRows,
+            "Tabuľka zoraďuje coordinate-based štart/cieľ páry len z práve zobrazeného datasetu jázd."
+          )}
+
+          <div class="card">
+            <div class="card-title">Priestorové pohľady z Tableau</div>
+            <p class="card-intro">
+              Tableau má mapové listy, ale HTML ostáva pri textovej súradnicovej sumarizácii, aby z priamej vzdialenosti
+              netvrdilo skutočnú trasu po cestách.
+            </p>
+            <ul class="validation-list">
+              <li>${view.showValidOnly ? "Zobrazené sú iba validné jazdy podľa Tableau bounds." : "Zobrazené sú všetky jazdy vrátane záznamov mimo validného rozsahu."}</li>
+              <li>Práve zobrazený dataset obsahuje ${formatNumber(view.metrics.totalRideCount, 0)} jázd.</li>
+              <li>${formatNumber(view.metrics.routeReadyCount, 0)} jázd má normalizovaný štart/cieľ pár použiteľný pre route summary.</li>
+              <li>Valid ride v HTML používa štartové bounds 16,5-23,6 / 47,7-49,7 po delení EW_START a EL_START hodnotou 1 000 000.</li>
+            </ul>
+          </div>
+        </div>
+      `;
+    }
+
+    function renderRideSection(view) {
+      if (!ridesSectionContent) {
+        return;
+      }
+
+      if (rideSummaryNote) {
+        rideSummaryNote.textContent = view.summary;
+      }
+
+      ridesSectionContent.innerHTML = `
+        ${renderRideKPIs(view.metrics)}
+
+        <div class="grid-2">
+          <div class="card canvas-card">
+            <div class="card-title">Vývoj jázd v čase</div>
+            <canvas id="chartMonthlyTrips" height="220"></canvas>
+          </div>
+          <div class="card canvas-card">
+            <div class="card-title">Jazdy podľa dňa</div>
+            <canvas id="chartWeekdayTrips" height="220"></canvas>
+          </div>
+        </div>
+
+        <div class="grid-13">
+          <div class="card canvas-card">
+            <div class="card-title">Kategórie jázd podľa Tableau</div>
+            <div class="donut-panel">
+              <div class="donut-canvas-wrap">
+                <canvas id="chartTripDistance" height="260"></canvas>
+              </div>
+              <div id="chartTripDistanceLegend" class="donut-legend" aria-label="Legenda kategórií jázd podľa Tableau"></div>
+            </div>
+          </div>
+          <div class="card canvas-card">
+            <div class="card-title">Vyťaženosť vozidiel podľa počtu jázd</div>
+            <canvas id="chartTopVehicles" height="260"></canvas>
+          </div>
+        </div>
+
+        ${renderRideTables(view)}
+
+        <div class="insight">
+          <strong>Rychla interpretacia:</strong>
+          V tomto móde sa KPI, grafy, tabuľky aj route summary rátajú z toho istého filtrovaného datasetu jázd.
+        </div>
+      `;
+    }
+
+    function updateRideModeUI(showValidOnly) {
+      const modeKey = showValidOnly ? "valid" : "all";
+
+      document.querySelectorAll(".ride-toggle-btn").forEach((button) => {
+        const isActive = button.dataset.rideMode === modeKey;
+        button.classList.toggle("active", isActive);
+        button.setAttribute("aria-pressed", isActive ? "true" : "false");
+      });
+    }
+
+    function setRideMode(showValidOnly) {
+      rideState.showValidOnly = showValidOnly;
+      rideState.currentView = buildRideView(showValidOnly);
+      hideChartTooltip();
+      updateRideModeUI(showValidOnly);
+      renderRideSection(rideState.currentView);
+
+      // Replacing the rides DOM recreates the canvases, so the custom charts are redrawn once per mode change.
+      if (activeTab === "jazdy") {
+        requestAnimationFrame(() => drawTripsCharts(rideState.currentView));
+      }
+    }
+
+    function drawTripsCharts(view = rideState.currentView) {
+      if (!view) return;
+
       drawBarChart(
         "chartMonthlyTrips",
-        dashboard.jazdy.charts.jazdy_podla_mesiaca,
+        view.charts.monthly,
         palette.accent1,
         (value) => formatNumber(value, 0),
         { tooltip: true }
       );
       drawBarChart(
         "chartWeekdayTrips",
-        dashboard.jazdy.charts.jazdy_podla_dna,
+        view.charts.weekday,
         palette.accent4,
         (value) => formatNumber(value, 0),
         { tooltip: true }
       );
-      drawDonutChart(
+      drawInteractiveDonutChart(
         "chartTripDistance",
-        dashboard.jazdy.charts.kategorie_jazd_tableau,
-        [palette.accent2, palette.accent1, palette.accent3, palette.accent4, "#9f7aea", "#ffb86c"]
+        view.charts.categories,
+        [palette.accent2, palette.accent1, palette.accent3, palette.accent4, "#9f7aea", "#ffb86c"],
+        { legendId: "chartTripDistanceLegend" }
       );
       drawHorizontalBars(
         "chartTopVehicles",
-        dashboard.jazdy.charts.top_vozidla_podla_poctu_jazd,
+        view.charts.topVehicles,
         palette.accent1,
         (value) => formatNumber(value, 0),
         { tooltip: true }
@@ -2465,25 +3704,16 @@ def build_html(dashboard: dict) -> str:
     }
 
     function drawAdvancedCharts() {
-      const vehicleItems = dashboard.pokrocilejsia_analytika.jazdy.top_vehicle_shares.map((item) => ({
-        label: item.vehicle_id,
-        value: Number(item.inefficient_share_pct)
-      }));
-      const abcQtyItems = dashboard.pokrocilejsia_analytika.material.abc_summary.map((item) => ({
-        label: item.abc_segment,
-        value: Number(item.quantity_share_pct)
-      }));
-
       drawHorizontalBars(
-        "chartInefficientVehicles",
-        vehicleItems,
+        "chartRideReviewScore",
+        dashboard.pokrocilejsia_analytika.jazdy.chart,
         palette.accent2,
-        (value) => formatNumber(value, 1) + "%"
+        (value) => formatNumber(value, 1) + " b."
       );
-      drawHorizontalBars(
-        "chartAbcQtyShare",
-        abcQtyItems,
-        palette.accent4,
+      drawDonutChart(
+        "chartMaterialSegmentsAdvanced",
+        dashboard.pokrocilejsia_analytika.material.chart,
+        [palette.accent2, palette.accent3, palette.accent1, palette.accent4],
         (value) => formatNumber(value, 1) + "%"
       );
     }
@@ -2518,6 +3748,12 @@ def build_html(dashboard: dict) -> str:
       button.addEventListener("click", () => showTab(button.dataset.tab));
     });
 
+    document.querySelectorAll(".ride-toggle-btn").forEach((button) => {
+      button.addEventListener("click", () => {
+        setRideMode(button.dataset.rideMode === "valid");
+      });
+    });
+
     let resizeTimer = null;
     window.addEventListener("resize", () => {
       window.clearTimeout(resizeTimer);
@@ -2525,6 +3761,7 @@ def build_html(dashboard: dict) -> str:
     });
 
     window.addEventListener("DOMContentLoaded", () => {
+      setRideMode(true);
       drawActiveTab();
     });
   </script>
