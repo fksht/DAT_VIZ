@@ -19,7 +19,12 @@ HTML_OUTPUT = VIS_DIR / "analyza_dashboard.html"
 
 TABLEAU_ABC_A_SHARE_THRESHOLD = 0.80
 TABLEAU_ABC_B_SHARE_THRESHOLD = 0.95
+TABLEAU_ABC_CHART_A_MIN_TOTAL_QUANTITY = 1_000_000
+TABLEAU_ABC_CHART_B_MIN_TOTAL_QUANTITY = 100_000
 TOP_MATERIAL_LIMIT = 10
+RIDE_ANOMALY_DISTANCE_THRESHOLD_M = 500.0
+RIDE_NUMERIC_ZERO_EPSILON = 1e-9
+MOTOHOUR_SECONDS_PER_HOUR = 3600.0
 
 EXPECTED_MATERIAL_ROW_COUNT = 644_106
 EXPECTED_MATERIAL_UNIQUE_MATERIALS = 690
@@ -65,6 +70,20 @@ TABLEAU_RIDE_CATEGORY_ORDER = [
     "Regionálna (5-50km)",
     "Diaľková (>50km)",
 ]
+
+RIDE_ANOMALY_CATEGORY_ORDER = [
+    "Normálna jazda",
+    "Pohyb bez motohodín",
+    "Motor beží, auto stojí",
+    "Nulová jazda (GPS ping)",
+]
+
+RIDE_ANOMALY_INTERPRETATIONS = {
+    "Normálna jazda": "Motohodiny aj vzdialenosť naznačujú bežný presun bez zjavného signálu nekonzistencie.",
+    "Pohyb bez motohodín": "Vozidlo sa pohlo aspoň 500 m, ale rozdiel motohodín je nulový. Môže ísť o telemetrický nesúlad, chýbajúci CAN, ťahanie alebo nekonzistentný záznam.",
+    "Motor beží, auto stojí": "Motohodiny rastú, ale priamy posun ostáva pod 500 m. Môže ísť o nakládku, čakanie, hydrauliku, voľnobeh alebo inú stacionárnu prevádzku.",
+    "Nulová jazda (GPS ping)": "Ani motohodiny, ani vzdialenosť nenaznačujú reálnu jazdu. Záznam skôr pripomína GPS/telemetrický ping.",
+}
 
 RIDES_MONTH_LABELS_SHORT = {
     1: "Jan",
@@ -320,6 +339,14 @@ def classify_material_abc_by_cumulative_share(cumulative_share: float) -> str:
     return "C"
 
 
+def classify_material_abc_for_count_chart(total_quantity: float) -> str:
+    if total_quantity >= TABLEAU_ABC_CHART_A_MIN_TOTAL_QUANTITY:
+        return "A"
+    if total_quantity >= TABLEAU_ABC_CHART_B_MIN_TOTAL_QUANTITY:
+        return "B"
+    return "C"
+
+
 def aggregate_material_totals(material: pd.DataFrame) -> pd.DataFrame:
     totals = (
         material.groupby("material_number", as_index=False)
@@ -549,6 +576,24 @@ def load_jazdy_dataset(path: Path) -> pd.DataFrame:
     tableau_lon_start = pd.to_numeric(df["EL_START"], errors="coerce") / 1_000_000
     distance_m = pd.to_numeric(df["DIST_START_END_M"], errors="coerce") / 1e9
     distance_km = distance_m / 1000
+    motohour_start_raw = pd.to_numeric(df["MOTOHODINY_ZACIATOK"], errors="coerce")
+    motohour_end_raw = pd.to_numeric(df["MOTOHODINY_KONIEC"], errors="coerce")
+    motohour_diff_raw = pd.to_numeric(df["ROZDIEL_MOTOHODINY"], errors="coerce")
+
+    motohour_comparison_mask = (
+        motohour_start_raw.notna()
+        & motohour_end_raw.notna()
+        & motohour_diff_raw.notna()
+    )
+    motohour_delta_mismatch = (
+        (motohour_end_raw - motohour_start_raw - motohour_diff_raw).abs() > RIDE_NUMERIC_ZERO_EPSILON
+    ) & motohour_comparison_mask
+    motohour_mismatch_count = int(motohour_delta_mismatch.sum())
+    if motohour_mismatch_count:
+        raise ValueError(
+            "MOTOHODINY_ZACIATOK / MOTOHODINY_KONIEC do not match ROZDIEL_MOTOHODINY "
+            f"for {motohour_mismatch_count} ride rows."
+        )
 
     tableau_valid_trip = (
         tableau_lat_start.between(47, 51)
@@ -571,6 +616,10 @@ def load_jazdy_dataset(path: Path) -> pd.DataFrame:
             "stoppage_min": df["DOBA_STATIA_MIN"].apply(parse_decimal_or_scaled),
             "distance_m": distance_m,
             "distance_km": distance_km,
+            "motohour_start_raw": motohour_start_raw,
+            "motohour_end_raw": motohour_end_raw,
+            "motohour_diff_raw": motohour_diff_raw,
+            "motohour_diff_hours": motohour_diff_raw / MOTOHOUR_SECONDS_PER_HOUR,
             "ew_start_raw": pd.to_numeric(df["EW_START"], errors="coerce"),
             "el_start_raw": pd.to_numeric(df["EL_START"], errors="coerce"),
             "tableau_valid_trip": tableau_valid_trip,
@@ -721,6 +770,16 @@ def verify_material_abc(material_totals: pd.DataFrame) -> tuple[pd.DataFrame, di
         "missing_segment_count": missing_segment_count,
         "segment_counts": segment_counts,
     }
+
+
+def build_material_abc_count_chart(material_totals: pd.DataFrame) -> list[dict[str, int]]:
+    segment_counts = {segment: 0 for segment in ["A", "B", "C"]}
+    chart_segments = material_totals["total_quantity"].apply(classify_material_abc_for_count_chart)
+    segment_counts.update(chart_segments.value_counts().to_dict())
+    return [
+        {"label": segment, "value": int(segment_counts[segment])}
+        for segment in ["A", "B", "C"]
+    ]
 
 
 def find_material_lookup_file(root: Path) -> Path | None:
@@ -980,108 +1039,252 @@ def material_month_label_full(value: str) -> str:
 
 
 def compute_advanced_ride_analytics(jazdy: pd.DataFrame, trips_per_vehicle: pd.DataFrame) -> dict:
-    # This goes beyond descriptive reporting because it ranks manual-review priority using a transparent,
-    # rule-based score instead of only listing counts. The result is heuristic and explicitly not a proof of waste.
-    short_trip_counts = (
-        jazdy.groupby("vehicle_id", as_index=False)
-        .agg(short_trip_count=("short_trip", "sum"))
-    )
-    ride_review = trips_per_vehicle.merge(short_trip_counts, on="vehicle_id", how="left")
-    ride_review["short_trip_count"] = ride_review["short_trip_count"].fillna(0).astype(int)
-    ride_review["short_share_pct"] = (
-        ride_review["short_trip_count"] / ride_review["trip_count"] * 100
-    ).round(1)
-    ride_review["review_score"] = (
-        ride_review["inefficient_share_pct"] * 0.5
-        + ride_review["near_zero_share_pct"] * 0.3
-        + ride_review["short_share_pct"] * 0.2
-    ).round(1)
-    ride_review["priority_band"] = np.select(
+    ride_signals = jazdy.copy()
+    motohour_diff_raw = pd.to_numeric(ride_signals["motohour_diff_raw"], errors="coerce")
+    distance_m = pd.to_numeric(ride_signals["distance_m"], errors="coerce")
+
+    missing_motohour_count = int(motohour_diff_raw.isna().sum())
+    missing_distance_count = int(distance_m.isna().sum())
+    if missing_motohour_count or missing_distance_count:
+        raise ValueError(
+            "Advanced ride anomaly analysis requires non-null motohour and distance signals. "
+            f"Missing motohours={missing_motohour_count}, missing distance={missing_distance_count}."
+        )
+
+    # Excel-backed numeric fields can arrive as floats, so zero is interpreted with a tiny epsilon
+    # before the rules separate true movement from a telemetry-only ping.
+    motohour_zero = motohour_diff_raw.abs() <= RIDE_NUMERIC_ZERO_EPSILON
+    motohour_positive = motohour_diff_raw > RIDE_NUMERIC_ZERO_EPSILON
+    near_zero_movement = distance_m < RIDE_ANOMALY_DISTANCE_THRESHOLD_M
+
+    ride_signals["anomaly_category"] = np.select(
         [
-            ride_review["review_score"] >= 25,
-            ride_review["review_score"] >= 20,
+            motohour_positive & near_zero_movement,
+            motohour_zero & (~near_zero_movement),
+            motohour_zero & near_zero_movement,
         ],
         [
-            "Vysoká priorita",
-            "Stredná priorita",
+            "Motor beží, auto stojí",
+            "Pohyb bez motohodín",
+            "Nulová jazda (GPS ping)",
         ],
-        default="Nižšia priorita",
+        default="Normálna jazda",
     )
-    ride_review = ride_review.sort_values(
-        ["review_score", "inefficient_share_pct", "trip_count", "vehicle_id"],
-        ascending=[False, False, False, True],
+    ride_signals["anomalous_trip"] = ride_signals["anomaly_category"] != "Normálna jazda"
+    ride_signals["idle_motohour_hours"] = np.where(
+        ride_signals["anomaly_category"] == "Motor beží, auto stojí",
+        motohour_diff_raw / MOTOHOUR_SECONDS_PER_HOUR,
+        0.0,
     )
 
-    total_flagged = int(jazdy["potentially_inefficient_trip"].sum())
-    high_priority = ride_review.loc[ride_review["review_score"] >= 25].copy()
-    flagged_in_high_priority = int(high_priority["inefficient_trip_count"].sum())
-    flagged_focus_share_pct = (
-        flagged_in_high_priority / total_flagged * 100 if total_flagged else 0
+    category_order = {name: index for index, name in enumerate(RIDE_ANOMALY_CATEGORY_ORDER)}
+    total_analyzed_rides = int(len(ride_signals))
+    category_summary = (
+        ride_signals["anomaly_category"]
+        .value_counts()
+        .reindex(RIDE_ANOMALY_CATEGORY_ORDER, fill_value=0)
+        .rename_axis("category")
+        .reset_index(name="trip_count")
     )
-    top_vehicle = ride_review.iloc[0]
+    category_summary["share_pct"] = (
+        category_summary["trip_count"] / total_analyzed_rides * 100 if total_analyzed_rides else 0.0
+    )
+
+    category_total_count = int(category_summary["trip_count"].sum())
+    category_share_pct_sum = float(category_summary["share_pct"].sum())
+    assert_exact("ride anomaly category total", category_total_count, total_analyzed_rides)
+    assert_close(
+        "ride anomaly category share pct sum",
+        category_share_pct_sum,
+        100.0 if total_analyzed_rides else 0.0,
+        tolerance=1e-6,
+    )
+
+    anomaly_summary = category_summary.loc[category_summary["category"] != "Normálna jazda"].copy()
+    anomaly_summary["category_order"] = anomaly_summary["category"].map(category_order)
+    anomaly_summary = anomaly_summary.sort_values(
+        ["trip_count", "category_order"],
+        ascending=[False, True],
+    )
+
+    total_anomalous_rides = int(anomaly_summary["trip_count"].sum())
+    anomaly_share_pct = total_anomalous_rides / total_analyzed_rides * 100 if total_analyzed_rides else 0.0
+    total_idle_motohour_hours = float(ride_signals["idle_motohour_hours"].sum())
+    top_anomaly = anomaly_summary.iloc[0]
+
+    vehicle_review = (
+        ride_signals.groupby("vehicle_id", as_index=False)
+        .agg(
+            trip_count=("vehicle_id", "size"),
+            motor_running_stationary_count=("anomaly_category", lambda s: int((s == "Motor beží, auto stojí").sum())),
+            movement_without_motohours_count=("anomaly_category", lambda s: int((s == "Pohyb bez motohodín").sum())),
+            gps_ping_count=("anomaly_category", lambda s: int((s == "Nulová jazda (GPS ping)").sum())),
+            anomalous_trip_count=("anomalous_trip", "sum"),
+            motor_running_stationary_motohours=("idle_motohour_hours", "sum"),
+        )
+        .sort_values("vehicle_id")
+        .reset_index(drop=True)
+    )
+    vehicle_review["anomalous_share_pct"] = (
+        vehicle_review["anomalous_trip_count"] / vehicle_review["trip_count"] * 100
+    )
+    vehicle_review["motor_running_stationary_share_pct"] = (
+        vehicle_review["motor_running_stationary_count"] / vehicle_review["trip_count"] * 100
+    )
+    vehicle_review = vehicle_review.sort_values(
+        [
+            "anomalous_share_pct",
+            "motor_running_stationary_motohours",
+            "motor_running_stationary_count",
+            "vehicle_id",
+        ],
+        ascending=[False, False, False, True],
+    ).reset_index(drop=True)
+
+    top_motor_concentration_vehicle = vehicle_review.sort_values(
+        [
+            "motor_running_stationary_share_pct",
+            "motor_running_stationary_count",
+            "motor_running_stationary_motohours",
+            "vehicle_id",
+        ],
+        ascending=[False, False, False, True],
+    ).iloc[0]
+    top_movement_without_motohours_vehicle = vehicle_review.sort_values(
+        [
+            "movement_without_motohours_count",
+            "anomalous_share_pct",
+            "vehicle_id",
+        ],
+        ascending=[False, False, True],
+    ).iloc[0]
+
+    count_by_category = {
+        row.category: int(row.trip_count)
+        for row in category_summary.itertuples(index=False)
+    }
 
     return {
-        "question": "Ktoré vozidlá koncentrujú najvyšší podiel potenciálne neefektívnych a nízkohodnotných jázd?",
-        "method_title": "Heuristické prioritizačné skóre pre manuálnu kontrolu",
+        "title": "Pokročilá analytika: anomálie medzi motohodinami a vzdialenosťou",
+        "question": (
+            "Ktoré jazdy naznačujú neefektívnu prevádzku, státie s bežiacim motorom "
+            "alebo GPS/telemetrickú nekonzistenciu?"
+        ),
+        "method_title": "Heuristická kategorizácia z polí ROZDIEL_MOTOHODINY a DIST_START_END_M",
+        "method_intro": (
+            "Každá jazda sa zaradí presne do jednej kategórie podľa rozdielu motohodín a priamej "
+            "vzdialenosti medzi štartom a koncom. Výstup je podklad na interpretáciu a manuálny review, "
+            "nie automatický dôkaz prevádzkového problému."
+        ),
         "method_points": [
-            "Jazda je označená ako potenciálne neefektívna, ak trvá aspoň 30 minút a posun je menší ako 0,5 km.",
-            "Na úrovni vozidla sa počíta skóre = 50 % podiel označených jázd + 30 % near-zero podiel + 20 % podiel krátkych jázd do 5 km.",
-            "Skóre je len proxy pre manuálnu kontrolu. Neznamená dokázanú neefektivitu ani finančnú škodu.",
+            f"Hranica pre minimálny pohyb je {int(RIDE_ANOMALY_DISTANCE_THRESHOLD_M)} m. Jazdy pod týmto prahom sa čítajú ako near-zero presun.",
+            "Nulová hodnota motohodín sa vyhodnocuje s malým epsilon, aby sa odfiltrovali čisto numerické artefakty po načítaní Excelu.",
+            "Kategória Motor beží, auto stojí môže znamenať nakládku, čakanie, hydrauliku, voľnobeh alebo inú stacionárnu prevádzku.",
+            "Kategória Pohyb bez motohodín môže ukazovať telemetrický nesúlad, chýbajúci CAN, ťahanie alebo nekonzistentný záznam.",
         ],
         "summary_cards": [
             {
-                "label": "Označené jazdy",
-                "value": total_flagged,
-                "sub": "signál na manuálnu kontrolu",
+                "label": "Analyzované jazdy",
+                "value": total_analyzed_rides,
+                "sub": "plná populácia Datasetu 1",
                 "format": "int",
             },
             {
-                "label": "Vozidlá s vysokou prioritou",
-                "value": int(len(high_priority)),
-                "sub": "skóre aspoň 25 bodov",
+                "label": "Anomálne jazdy",
+                "value": total_anomalous_rides,
+                "sub": "súčet troch anomálnych kategórií",
                 "format": "int",
             },
             {
-                "label": "Koncentrácia signálu",
-                "value": round(flagged_focus_share_pct, 1),
-                "sub": "podiel označených jázd v top prioritných vozidlách",
+                "label": "Podiel anomálií",
+                "value": round(anomaly_share_pct, 1),
+                "sub": "anomálne jazdy / všetky analyzované jazdy",
                 "format": "pct1",
+            },
+            {
+                "label": "Motohodiny pri státí (h)",
+                "value": round(total_idle_motohour_hours, 1),
+                "sub": "súčet kategórie Motor beží, auto stojí",
+                "format": "float1",
+            },
+            {
+                "label": "Najčastejšia anomália",
+                "value": int(top_anomaly.trip_count),
+                "sub": f"{top_anomaly.category} | {top_anomaly.share_pct:.1f} %",
+                "format": "int",
             },
         ],
         "chart": [
             {
-                "label": row.vehicle_id,
-                "value": float(row.review_score),
+                "label": row.category,
+                "value": int(row.trip_count),
             }
-            for row in ride_review.head(8).itertuples(index=False)
+            for row in category_summary.itertuples(index=False)
         ],
-        "table": [
+        "category_table": [
+            {
+                "category": row.category,
+                "trip_count": int(row.trip_count),
+                "share_pct": float(row.share_pct),
+                "interpretation": RIDE_ANOMALY_INTERPRETATIONS[row.category],
+            }
+            for row in category_summary.itertuples(index=False)
+        ],
+        "category_table_intro": (
+            "Každá jazda patrí presne do jednej zo štyroch kategórií, takže počty aj podiely sa skladajú "
+            "na celú analyzovanú populáciu jázd."
+        ),
+        "key_findings": [
+            (
+                "Rozdelenie kategórií: "
+                f"Normálna jazda {count_by_category['Normálna jazda']}, "
+                f"Pohyb bez motohodín {count_by_category['Pohyb bez motohodín']}, "
+                f"Motor beží, auto stojí {count_by_category['Motor beží, auto stojí']}, "
+                f"Nulová jazda (GPS ping) {count_by_category['Nulová jazda (GPS ping)']}."
+            ),
+            (
+                f"Najsilnejší anomálny signál je {top_anomaly.category} "
+                f"({int(top_anomaly.trip_count)} jázd; {top_anomaly.share_pct:.1f} % všetkých jázd)."
+            ),
+            (
+                f"V kategórii Motor beží, auto stojí sa nazbieralo {total_idle_motohour_hours:.1f} motohodín. "
+                f"Najvyššiu koncentráciu má vozidlo {top_motor_concentration_vehicle.vehicle_id} "
+                f"({int(top_motor_concentration_vehicle.motor_running_stationary_count)} jázd; "
+                f"{top_motor_concentration_vehicle.motor_running_stationary_share_pct:.1f} % jeho jázd)."
+            ),
+            (
+                f"Najvyšší počet kategórie Pohyb bez motohodín má vozidlo "
+                f"{top_movement_without_motohours_vehicle.vehicle_id} "
+                f"({int(top_movement_without_motohours_vehicle.movement_without_motohours_count)} jázd)."
+            ),
+        ],
+        "vehicle_review": [
             {
                 "vehicle_id": row.vehicle_id,
                 "trip_count": int(row.trip_count),
-                "inefficient_trip_count": int(row.inefficient_trip_count),
-                "inefficient_share_pct": float(row.inefficient_share_pct),
-                "near_zero_share_pct": float(row.near_zero_share_pct),
-                "short_share_pct": float(row.short_share_pct),
-                "review_score": float(row.review_score),
-                "priority_band": row.priority_band,
+                "motor_running_stationary_count": int(row.motor_running_stationary_count),
+                "movement_without_motohours_count": int(row.movement_without_motohours_count),
+                "gps_ping_count": int(row.gps_ping_count),
+                "anomalous_share_pct": float(row.anomalous_share_pct),
+                "motor_running_stationary_motohours": float(row.motor_running_stationary_motohours),
             }
-            for row in ride_review.head(8).itertuples(index=False)
+            for row in vehicle_review.itertuples(index=False)
         ],
-        "result_text": (
-            f"Najvyššie skóre má vozidlo {top_vehicle.vehicle_id} ({top_vehicle.review_score:.1f}). "
-            f"Vozidlá s vysokou prioritou držia {flagged_focus_share_pct:.1f} % všetkých označených jázd."
+        "vehicle_review_intro": (
+            "Tabuľka je zoradená podľa podielu anomálnych jázd, pri zhode podľa motohodín v kategórii "
+            "Motor beží, auto stojí. Každý riadok používa iba metriky odvodené z nového 4-kategóriového rámca."
         ),
-        "interpretation": (
-            f"Manuálnu kontrolu sa oplatí začať pri vozidle {top_vehicle.vehicle_id}, pretože kombinuje vysoký podiel "
-            f"označených jázd s vysokou koncentráciou near-zero a krátkych presunov. Tento výstup je vhodný ako "
-            f"obhájiteľná priorita pre dispečing alebo fleet management."
-        ),
-        "recommendations": [
-            "Najprv preveriť top vozidlá s vysokou prioritou a porovnať ich s pracovným režimom alebo typom vozidla.",
-            "Near-zero a krátke jazdy čítať ako prevádzkový signál, nie ako automatický dôkaz neefektivity.",
-            "Ak sa tie isté vozidlá opakujú aj v ďalších obdobiach, skóre sa dá použiť ako jednoduchý monitoring proxy.",
-        ],
+        "validation": {
+            "analyzed_ride_count": total_analyzed_rides,
+            "category_total_count": category_total_count,
+            "category_share_pct_sum": category_share_pct_sum,
+            "anomaly_ride_count": total_anomalous_rides,
+            "anomaly_share_pct": anomaly_share_pct,
+            "distance_threshold_m": RIDE_ANOMALY_DISTANCE_THRESHOLD_M,
+            "zero_epsilon": RIDE_NUMERIC_ZERO_EPSILON,
+            "category_counts": count_by_category,
+            "motor_running_stationary_motohours": total_idle_motohour_hours,
+        },
     }
 
 
@@ -1298,6 +1501,7 @@ def build_dashboard_data(
     abc_summary = material_views["abc_summary"]
     top_materials = material_views["top_materials"]
     material_totals = material_views["material_totals"]
+    abc_count_chart = build_material_abc_count_chart(material_totals)
     comparison_chart = material_views["comparison_chart"]
     lookup_info = material_views["lookup"]
 
@@ -1525,8 +1729,8 @@ def build_dashboard_data(
                     for row in top_materials.itertuples(index=False)
                 ],
                 "abc_segmenty": [
-                    {"label": row.abc_segment, "value": int(row.unique_material_count)}
-                    for row in abc_summary.itertuples(index=False)
+                    {"label": item["label"], "value": item["value"]}
+                    for item in abc_count_chart
                 ],
                 "porovnanie_priemerneho_mnozstva_a_minima_skladu": [
                     {
@@ -1704,6 +1908,8 @@ def render_analysis_summary_cards(cards: list[dict]) -> str:
             value_text = fmt_pct(float(value), 1)
         elif value_format == "compact1":
             value_text = fmt_compact(float(value), 1)
+        elif value_format == "float1":
+            value_text = fmt_decimal(float(value), 1)
         elif isinstance(value, float) and not float(value).is_integer():
             value_text = fmt_decimal(float(value), 1)
         else:
@@ -1887,21 +2093,29 @@ def build_html(dashboard: dict) -> str:
 
     ride_summary_cards = render_analysis_summary_cards(advanced["jazdy"]["summary_cards"])
     ride_method_list = render_analysis_list(advanced["jazdy"]["method_points"])
-    ride_recommendation_list = render_analysis_list(
-        advanced["jazdy"]["recommendations"], "analysis-list analysis-list-compact"
+    ride_key_findings_list = render_analysis_list(
+        advanced["jazdy"]["key_findings"], "analysis-list analysis-list-compact"
     )
-    ride_review_rows = [
+    ride_category_rows = [
+        [
+            item["category"],
+            fmt_int(item["trip_count"]),
+            fmt_pct(item["share_pct"], 1),
+            item["interpretation"],
+        ]
+        for item in advanced["jazdy"]["category_table"]
+    ]
+    ride_vehicle_review_rows = [
         [
             item["vehicle_id"],
             fmt_int(item["trip_count"]),
-            fmt_int(item["inefficient_trip_count"]),
-            fmt_pct(item["inefficient_share_pct"], 1),
-            fmt_pct(item["near_zero_share_pct"], 1),
-            fmt_pct(item["short_share_pct"], 1),
-            fmt_decimal(item["review_score"], 1),
-            item["priority_band"],
+            fmt_int(item["motor_running_stationary_count"]),
+            fmt_int(item["movement_without_motohours_count"]),
+            fmt_int(item["gps_ping_count"]),
+            fmt_pct(item["anomalous_share_pct"], 1),
+            fmt_decimal(item["motor_running_stationary_motohours"], 1),
         ]
-        for item in advanced["jazdy"]["table"]
+        for item in advanced["jazdy"]["vehicle_review"]
     ]
 
     material_summary_cards = render_analysis_summary_cards(advanced["material"]["summary_cards"])
@@ -1954,57 +2168,73 @@ def build_html(dashboard: dict) -> str:
       <div class="analysis-report">
         <div class="analysis-head">
           <div class="analysis-kicker">Dataset 1 | Jazdy vozidiel</div>
-          <div class="card-title">Pokročilá úloha: identifikácia vozidiel s podozrivou neefektivitou</div>
+          <div class="card-title">{escape(advanced["jazdy"]["title"])}</div>
           <div class="analysis-label">Analytická otázka</div>
           <p class="analysis-question">{escape(advanced["jazdy"]["question"])}</p>
         </div>
 
         <div class="analysis-grid">
           <div class="analysis-block">
-            <div class="analysis-block-title">Metóda</div>
+            <div class="analysis-block-title">Metodika</div>
             <div class="analysis-method-title">{escape(advanced["jazdy"]["method_title"])}</div>
+            <p class="analysis-body">{escape(advanced["jazdy"]["method_intro"])}</p>
             {ride_method_list}
           </div>
           <div class="analysis-block">
-            <div class="analysis-block-title">Výsledok v skratke</div>
-            <p class="analysis-body">{escape(advanced["jazdy"]["result_text"])}</p>
+            <div class="analysis-block-title">Sumár KPI</div>
+            <p class="analysis-body">
+              KPI nižšie vychádzajú z plnej populácie jázd a používajú iba 4-kategóriový rámec anomálií
+              medzi motohodinami a vzdialenosťou.
+            </p>
             <div class="analysis-summary-grid">{ride_summary_cards}</div>
           </div>
         </div>
 
         <div class="analysis-grid">
           <div class="card canvas-card">
-            <div class="card-title">Rebríček vozidiel podľa prioritizačného skóre</div>
-            <p class="table-intro">Vyššie skóre znamená väčšiu koncentráciu označených, near-zero a krátkych jázd.</p>
-            <canvas id="chartRideReviewScore" height="250"></canvas>
+            <div class="card-title">Rozdelenie jázd podľa kategórie anomálie</div>
+            <p class="table-intro">
+              Donut zobrazuje všetky 4 kategórie. Legenda ukazuje počet jázd aj ich podiel na celej analyzovanej populácii.
+            </p>
+            <div class="donut-panel">
+              <div class="donut-canvas-wrap">
+                <canvas id="chartRideAnomalyCategories" height="260"></canvas>
+              </div>
+              <div id="chartRideAnomalyLegend" class="donut-legend" aria-label="Legenda kategórií anomálií jázd"></div>
+            </div>
           </div>
           {render_table(
-              "Vozidlá na prioritný review",
+              "Detail kategórií anomálií",
               [
-                  "Vozidlo",
-                  "Jazdy",
-                  "Označené",
-                  "Podiel označených",
-                  "Near-zero",
-                  "Krátke jazdy",
-                  "Prioritizačné skóre",
-                  "Priorita",
+                  "Kategória",
+                  "Počet jázd",
+                  "Podiel",
+                  "Interpretácia",
               ],
-              ride_review_rows,
-              intro="Tabuľka spája viac signálov do jednej transparentnej priority pre manuálnu kontrolu vozidiel.",
+              ride_category_rows,
+              intro=advanced["jazdy"]["category_table_intro"],
           )}
         </div>
 
-        <div class="analysis-grid">
-          <div class="analysis-callout">
-            <div class="analysis-block-title">Interpretácia</div>
-            <p class="analysis-body">{escape(advanced["jazdy"]["interpretation"])}</p>
-          </div>
-          <div class="analysis-callout analysis-callout-warm">
-            <div class="analysis-block-title">Odporúčanie</div>
-            {ride_recommendation_list}
-          </div>
+        <div class="analysis-callout">
+          <div class="analysis-block-title">Kľúčové zistenia</div>
+          {ride_key_findings_list}
         </div>
+
+        {render_table(
+            "Vozidlový review anomálií",
+            [
+                "Vozidlo",
+                "Jazdy spolu",
+                "Motor beží, auto stojí",
+                "Pohyb bez motohodín",
+                "Nulová jazda (GPS ping)",
+                "Podiel anomálií",
+                "Motohodiny pri státí",
+            ],
+            ride_vehicle_review_rows,
+            intro=advanced["jazdy"]["vehicle_review_intro"],
+        )}
       </div>
 
       <div class="analysis-report">
@@ -2513,7 +2743,7 @@ def build_html(dashboard: dict) -> str:
 
     .analysis-summary-grid {
       display: grid;
-      grid-template-columns: repeat(3, minmax(0, 1fr));
+      grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
       gap: 14px;
       margin-top: 18px;
     }
@@ -4215,11 +4445,17 @@ def build_html(dashboard: dict) -> str:
     }
 
     function drawAdvancedCharts() {
-      drawHorizontalBars(
-        "chartRideReviewScore",
+      drawInteractiveDonutChart(
+        "chartRideAnomalyCategories",
         dashboard.pokrocilejsia_analytika.jazdy.chart,
-        palette.accent2,
-        (value) => formatNumber(value, 1) + " b."
+        [palette.accent3, palette.accent4, palette.accent2, palette.accent1],
+        {
+          legendId: "chartRideAnomalyLegend",
+          centerLabel: "JAZDY",
+          ariaLabel: "Kategórie anomálií medzi motohodinami a vzdialenosťou. Fokusuj legendu pre zvýraznenie zodpovedajúcej kategórie.",
+          legendValueFormatter: (item, value, pctText) => `${formatNumber(value, 0)} jázd | ${pctText}`,
+          tooltipValueFormatter: (item, value, pctText) => `${formatNumber(value, 0)} jázd | ${pctText}`,
+        }
       );
       drawDonutChart(
         "chartMaterialSegmentsAdvanced",
@@ -4290,7 +4526,7 @@ def build_html(dashboard: dict) -> str:
     return html
 
 
-def print_build_summary(material_views: dict[str, object]) -> None:
+def print_build_summary(material_views: dict[str, object], ride_analytics: dict | None = None) -> None:
     kpi_summary = material_views["kpi_summary"]
     material_monthly = material_views["material_monthly"]
     abc_verification = material_views["abc_verification"]
@@ -4322,6 +4558,31 @@ def print_build_summary(material_views: dict[str, object]) -> None:
         "  stock-minimum comparison chart: "
         + ("generated" if comparison_chart_generated else "skipped")
     )
+    if ride_analytics is not None:
+        validation = ride_analytics["validation"]
+        category_counts = validation["category_counts"]
+        print("  ride anomaly validation:")
+        print(
+            f"    analyzed rides={validation['analyzed_ride_count']}"
+            f" | category total={validation['category_total_count']}"
+            f" | share sum={validation['category_share_pct_sum']:.1f}%"
+        )
+        print(
+            "    categories: "
+            f"Normálna jazda={category_counts['Normálna jazda']}, "
+            f"Pohyb bez motohodín={category_counts['Pohyb bez motohodín']}, "
+            f"Motor beží, auto stojí={category_counts['Motor beží, auto stojí']}, "
+            f"Nulová jazda (GPS ping)={category_counts['Nulová jazda (GPS ping)']}"
+        )
+        print(
+            f"    anomalous rides={validation['anomaly_ride_count']} "
+            f"({validation['anomaly_share_pct']:.1f}%)"
+            f" | motor-running idle hours={validation['motor_running_stationary_motohours']:.1f}"
+        )
+        print(
+            f"    thresholds: distance<{validation['distance_threshold_m']:.0f}m"
+            f" | zero epsilon={validation['zero_epsilon']}"
+        )
 
 
 def main() -> None:
@@ -4336,7 +4597,7 @@ def main() -> None:
     html = build_html(dashboard)
     HTML_OUTPUT.write_text(html, encoding="utf-8")
 
-    print_build_summary(material_views)
+    print_build_summary(material_views, dashboard["pokrocilejsia_analytika"]["jazdy"])
 
 
 if __name__ == "__main__":
