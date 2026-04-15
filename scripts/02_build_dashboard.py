@@ -15,7 +15,7 @@ VIS_DIR = ROOT / "visualization"
 
 JAZDY_INPUT = ROOT / "data" / "clean" / "dataset_jazdy_2024_cleaned.xlsx"
 MATERIAL_INPUT = ROOT / "data" / "raw" / "dataset_material_2023_2025.xlsx"
-HTML_OUTPUT = VIS_DIR / "analyza_dashboard.html"
+HTML_OUTPUT = VIS_DIR / "index.html"
 
 TABLEAU_ABC_A_SHARE_THRESHOLD = 0.80
 TABLEAU_ABC_B_SHARE_THRESHOLD = 0.95
