@@ -1,13 +1,14 @@
 from __future__ import annotations
 
 import json
-from datetime import time
+import re
+import unicodedata
+from datetime import datetime, time
 from html import escape
 from pathlib import Path
 
 import numpy as np
 import pandas as pd
-
 
 ROOT = Path(__file__).resolve().parents[1]
 VIS_DIR = ROOT / "visualization"
@@ -15,6 +16,21 @@ VIS_DIR = ROOT / "visualization"
 JAZDY_INPUT = ROOT / "data" / "clean" / "dataset_jazdy_2024_cleaned.xlsx"
 MATERIAL_INPUT = ROOT / "data" / "raw" / "dataset_material_2023_2025.xlsx"
 HTML_OUTPUT = VIS_DIR / "analyza_dashboard.html"
+
+TABLEAU_ABC_A_SHARE_THRESHOLD = 0.80
+TABLEAU_ABC_B_SHARE_THRESHOLD = 0.95
+TOP_MATERIAL_LIMIT = 10
+
+EXPECTED_MATERIAL_ROW_COUNT = 644_106
+EXPECTED_MATERIAL_UNIQUE_MATERIALS = 690
+EXPECTED_MATERIAL_TOTAL_QUANTITY = 211_935_852.0
+EXPECTED_MATERIAL_AVERAGE_QUANTITY = 329.0
+EXPECTED_MATERIAL_MEDIAN_QUANTITY = 12.0
+EXPECTED_MATERIAL_ZERO_ROWS = 172
+EXPECTED_MATERIAL_PARSE_NAN_COUNT = 0
+EXPECTED_MATERIAL_NEGATIVE_ROWS = 0
+EXPECTED_MATERIAL_TOP_QUANTITY_MONTH = "2024-11"
+EXPECTED_MATERIAL_TOP_QUANTITY_MONTH_VALUE = 16_738_491.0
 
 MONTH_NAMES_SK = {
     1: "januar",
@@ -126,20 +142,254 @@ MATERIAL_FIELDS = [
     },
     {
         "name": "MAT_NR",
-        "description": "Kod materialu. Prefix prvych 8 znakov sa pouziva ako jednoducha skupina.",
+        "description": "Kod materialu. Pouziva sa na DISTINCTCOUNT materialov, ABC segmentaciu aj rebricek top materialov.",
         "type": "STRING",
     },
     {
         "name": "MNOZSTVO",
-        "description": "Ocistene numericke mnozstvo pohybu bez dalsieho rozlisenia smeru pohybu.",
+        "description": "Parsed mnozstvo pohybu po Tableau-compatible integer coercion logike. Pouziva sa na mesacny objem, ABC aj top materialy.",
         "type": "DECIMAL",
     },
     {
         "name": "ABC_SEGMENT",
-        "description": "Odvodena ABC segmentacia podla kumulativneho podielu na celkovom mnozstve.",
+        "description": "Odvodena ABC segmentacia podla kumulativneho podielu na celkovom objeme materialov: A do 80 %, B do 95 %, C zvysok.",
         "type": "CATEGORY",
     },
 ]
+
+
+def _normalize_material_quantity_text(value: object) -> str:
+    return (
+        str(value)
+        .strip()
+        .replace("\u00a0", " ")
+        .replace("\u202f", " ")
+        .replace("\u2007", " ")
+    )
+
+
+def parse_material_quantity_tableau(value: object) -> int | float:
+    if pd.isna(value):
+        return np.nan
+    if isinstance(value, bool):
+        raise ValueError(f"Boolean quantity is not supported: {value!r}")
+    if isinstance(value, (int, np.integer)):
+        return int(value)
+    if isinstance(value, (float, np.floating)):
+        if not np.isfinite(value):
+            return np.nan
+        numeric = float(value)
+        if numeric.is_integer():
+            return int(numeric)
+        raise ValueError(
+            "Non-integral numeric MNOZSTVO encountered in a column Tableau typed as integer: "
+            f"{value!r}"
+        )
+
+    text = _normalize_material_quantity_text(value)
+    if not text:
+        return np.nan
+
+    negative = False
+    if text.startswith("(") and text.endswith(")"):
+        negative = True
+        text = text[1:-1].strip()
+
+    if text.endswith("-"):
+        negative = True
+        text = text[:-1].strip()
+
+    if text.startswith("−"):
+        negative = True
+        text = text[1:].strip()
+    elif text.startswith("-"):
+        negative = True
+        text = text[1:].strip()
+    elif text.startswith("+"):
+        text = text[1:].strip()
+
+    text = text.replace(" ", "").replace(",", "").replace(".", "")
+    if not text or not text.isdigit():
+        raise ValueError(f"Unable to parse MNOZSTVO value {value!r} with Tableau-style integer coercion.")
+
+    numeric = int(text)
+    return -numeric if negative else numeric
+
+
+def parse_material_quantity_series(
+    raw_values: pd.Series,
+    *,
+    source_path: Path | None = None,
+    print_debug: bool = True,
+) -> tuple[pd.Series, dict[str, object]]:
+    parsed_values: list[object] = []
+    parse_fail_examples: list[dict[str, object]] = []
+
+    for row_idx, value in raw_values.items():
+        try:
+            parsed_values.append(parse_material_quantity_tableau(value))
+        except ValueError as exc:
+            parsed_values.append(np.nan)
+            if len(parse_fail_examples) < 10:
+                parse_fail_examples.append(
+                    {
+                        "row_number": int(row_idx) + 2,
+                        "raw_value": value,
+                        "error": str(exc),
+                    }
+                )
+
+    parsed_series = pd.to_numeric(pd.Series(parsed_values, index=raw_values.index), errors="coerce")
+    report = {
+        "source_path": str(source_path) if source_path else None,
+        "row_count": int(len(raw_values)),
+        "parse_nan_count": int(parsed_series.isna().sum()),
+        "negative_count": int((parsed_series < 0).sum()),
+        "signed_sum": float(parsed_series.sum()),
+        "average": float(parsed_series.mean()),
+        "parse_fail_examples": parse_fail_examples,
+    }
+
+    if print_debug:
+        source_text = f" source={report['source_path']}" if report["source_path"] else ""
+        print(
+            "Material parse summary:"
+            f"{source_text}"
+            f" rows={report['row_count']}"
+            f" parse_nan_count={report['parse_nan_count']}"
+            f" negative_rows={report['negative_count']}"
+            f" signed_total={report['signed_sum']:.1f}"
+            f" average={report['average']:.1f}"
+        )
+
+    if report["parse_nan_count"] > 0:
+        sample_rows = ", ".join(
+            f"row {failure['row_number']}" for failure in parse_fail_examples[:5]
+        )
+        raise ValueError(
+            "Hard failure: non-empty MNOZSTVO values could not be parsed with Tableau parity logic. "
+            f"First failures: {sample_rows or 'n/a'}."
+        )
+
+    return parsed_series, report
+
+
+def normalize_column_name(value: object) -> str:
+    text = unicodedata.normalize("NFKD", str(value))
+    ascii_text = text.encode("ascii", "ignore").decode("ascii")
+    return re.sub(r"[^a-z0-9]+", "", ascii_text.lower())
+
+
+def normalize_join_text(value: object) -> str:
+    if pd.isna(value):
+        return ""
+    text = unicodedata.normalize("NFKD", str(value))
+    ascii_text = text.encode("ascii", "ignore").decode("ascii")
+    return re.sub(r"[^A-Z0-9]+", "", ascii_text.upper())
+
+
+def parse_lookup_numeric(value: object) -> float:
+    if pd.isna(value):
+        return np.nan
+    if isinstance(value, (int, float, np.integer, np.floating)):
+        return float(value)
+
+    text = str(value).strip().replace("\u00a0", "").replace(" ", "")
+    if not text:
+        return np.nan
+
+    if "," in text and "." in text:
+        if text.rfind(",") > text.rfind("."):
+            text = text.replace(".", "").replace(",", ".")
+        else:
+            text = text.replace(",", "")
+    elif "," in text:
+        text = text.replace(",", ".")
+
+    try:
+        return float(text)
+    except ValueError:
+        return np.nan
+
+
+def classify_material_abc_by_cumulative_share(cumulative_share: float) -> str:
+    if cumulative_share <= TABLEAU_ABC_A_SHARE_THRESHOLD:
+        return "A"
+    if cumulative_share <= TABLEAU_ABC_B_SHARE_THRESHOLD:
+        return "B"
+    return "C"
+
+
+def aggregate_material_totals(material: pd.DataFrame) -> pd.DataFrame:
+    totals = (
+        material.groupby("material_number", as_index=False)
+        .agg(
+            total_quantity=("quantity_signed", "sum"),
+            average_quantity=("quantity_signed", "mean"),
+        )
+        .sort_values(["total_quantity", "material_number"], ascending=[False, True])
+        .reset_index(drop=True)
+    )
+    overall_total = float(totals["total_quantity"].sum())
+    if overall_total:
+        totals["cumulative_share"] = totals["total_quantity"].cumsum() / overall_total
+    else:
+        totals["cumulative_share"] = 0.0
+    totals["abc_segment"] = totals["cumulative_share"].apply(classify_material_abc_by_cumulative_share)
+    totals["quantity_share_pct"] = (
+        totals["total_quantity"] / overall_total * 100 if overall_total else 0.0
+    )
+    return totals
+
+
+def finalize_material_dataset(cleaned: pd.DataFrame, *, report_parse: bool = True) -> pd.DataFrame:
+    cleaned = cleaned.copy()
+
+    if "quantity_signed" in cleaned.columns:
+        quantity_signed = pd.to_numeric(cleaned["quantity_signed"], errors="coerce")
+    elif "quantity_clean" in cleaned.columns:
+        quantity_signed = pd.to_numeric(cleaned["quantity_clean"], errors="coerce")
+    else:
+        raise ValueError("Material dataset is missing quantity_signed / quantity_clean.")
+
+    parse_nan_count = int(quantity_signed.isna().sum())
+    if report_parse:
+        print(f"Material quantity parse NaNs: {parse_nan_count} of {len(cleaned)}")
+    if parse_nan_count > 0:
+        raise ValueError(
+            "Hard failure: material dataset contains NaN quantity_signed values after parsing. "
+            f"NaN count: {parse_nan_count}."
+        )
+
+    cleaned["quantity_signed"] = quantity_signed
+    cleaned["quantity_abs"] = quantity_signed.abs()
+    cleaned["zero_quantity_record"] = cleaned["quantity_signed"] == 0
+    cleaned["movement_direction"] = np.select(
+        [
+            cleaned["quantity_signed"] > 0,
+            cleaned["quantity_signed"] < 0,
+            cleaned["quantity_signed"] == 0,
+        ],
+        [
+            "positive",
+            "negative",
+            "zero",
+        ],
+        default="zero",
+    )
+    cleaned = cleaned.drop(columns=["quantity_clean", "abc_segment"], errors="ignore")
+
+    material_totals = aggregate_material_totals(cleaned)
+
+    finalized = cleaned.merge(
+        material_totals[["material_number", "abc_segment"]],
+        on="material_number",
+        how="left",
+    )
+    missing_abc_count = int(finalized["abc_segment"].isna().sum())
+    if missing_abc_count:
+        raise AssertionError(f"ABC segment merge produced missing values: {missing_abc_count}")
+    return finalized
 
 
 def parse_mixed_date(value: object, formats: list[str]) -> pd.Timestamp:
@@ -156,6 +406,38 @@ def parse_mixed_date(value: object, formats: list[str]) -> pd.Timestamp:
             continue
 
     return pd.to_datetime(text, errors="coerce", dayfirst=True)
+
+
+def parse_material_date_tableau(value: object) -> pd.Timestamp:
+    if pd.isna(value):
+        return pd.NaT
+    if isinstance(value, pd.Timestamp):
+        value = value.to_pydatetime()
+
+    if isinstance(value, datetime):
+        # The material DATUM column is mixed in the workbook source file:
+        # rows with ambiguous day<=12 were auto-coerced into native Excel dates,
+        # while the rest stayed as day-first text. Tableau parity is restored only
+        # when the native-date subset is reinterpreted with swapped day/month.
+        return pd.Timestamp(
+            year=value.year,
+            month=value.day,
+            day=value.month,
+            hour=value.hour,
+            minute=value.minute,
+            second=value.second,
+        )
+
+    return parse_mixed_date(
+        value,
+        [
+            "%d. %m. %Y %H:%M:%S",
+            "%d.%m.%Y %H:%M:%S",
+            "%d. %m. %Y %H:%M",
+            "%Y-%m-%d %H:%M:%S",
+            "%Y-%m-%d",
+        ],
+    )
 
 
 def format_time(value: object) -> str:
@@ -212,22 +494,6 @@ def parse_decimal_or_scaled(value: object, scaled_divisor: float = 1e8) -> float
     return numeric
 
 
-def parse_quantity(value: object) -> float:
-    if pd.isna(value):
-        return np.nan
-    if isinstance(value, str):
-        return float(value.strip().replace(",", "."))
-    return float(value)
-
-
-def classify_abc(cumulative_share: float) -> str:
-    if cumulative_share <= 0.80:
-        return "A"
-    if cumulative_share <= 0.95:
-        return "B"
-    return "C"
-
-
 def classify_tableau_ride_category(distance_m: float) -> str:
     if pd.isna(distance_m):
         return "Neznáme"
@@ -254,8 +520,8 @@ def json_number_or_none(value: object) -> float | int | None:
 
 
 def load_jazdy_dataset(path: Path) -> pd.DataFrame:
-    if path.suffix.lower() == ".csv":
-        return pd.read_csv(path)
+    if path.suffix.lower() not in {".xlsx", ".xls"}:
+        raise ValueError(f"Unsupported rides input format: {path}. Expected Excel workbook.")
 
     df = pd.read_excel(path)
     df["trip_date_dt"] = df["DATUM"].apply(
@@ -324,22 +590,16 @@ def load_jazdy_dataset(path: Path) -> pd.DataFrame:
 
 
 def load_material_dataset(path: Path) -> pd.DataFrame:
-    if path.suffix.lower() == ".csv":
-        return pd.read_csv(path)
+    if path.suffix.lower() not in {".xlsx", ".xls"}:
+        raise ValueError(f"Unsupported material input format: {path}. Expected Excel workbook.")
 
     df = pd.read_excel(path)
-    df["movement_dt"] = df["DATUM"].apply(
-        lambda value: parse_mixed_date(
-            value,
-            [
-                "%d. %m. %Y %H:%M:%S",
-                "%d.%m.%Y %H:%M:%S",
-                "%d. %m. %Y %H:%M",
-                "%Y-%m-%d %H:%M:%S",
-                "%Y-%m-%d",
-            ],
-        )
+    quantity_signed, _ = parse_material_quantity_series(
+        df["MNOZSTVO"],
+        source_path=path,
+        print_debug=True,
     )
+    df["movement_dt"] = df["DATUM"].apply(parse_material_date_tableau)
 
     invalid_dates = int(df["movement_dt"].isna().sum())
     if invalid_dates:
@@ -353,29 +613,325 @@ def load_material_dataset(path: Path) -> pd.DataFrame:
             "month": df["movement_dt"].dt.month.astype(int),
             "year_month": df["movement_dt"].dt.to_period("M").astype(str),
             "material_number": df["MAT_NR"].astype(str),
-            "material_prefix": df["MAT_NR"].astype(str).str[:8],
-            "quantity_clean": df["MNOZSTVO"].apply(parse_quantity),
+            "quantity_signed": quantity_signed,
+        }
+    )
+    return finalize_material_dataset(cleaned, report_parse=False)
+
+
+def summarize_material_quantity_validation(material: pd.DataFrame) -> dict:
+    quantity_signed = material["quantity_signed"]
+    quantity_abs = material["quantity_abs"]
+    signed_total_quantity = float(quantity_signed.sum())
+    abs_total_quantity = float(quantity_abs.sum())
+
+    return {
+        "signed_total_quantity": round(signed_total_quantity, 1),
+        "abs_total_quantity": round(abs_total_quantity, 1),
+        "positive_total_quantity": round(float(quantity_signed.loc[quantity_signed > 0].sum()), 1),
+        "negative_total_quantity_abs": round(float(quantity_signed.loc[quantity_signed < 0].abs().sum()), 1),
+        "negative_row_count": int((quantity_signed < 0).sum()),
+        "zero_row_count": int(material["zero_quantity_record"].sum()),
+        "parse_nan_count": int(quantity_signed.isna().sum()),
+        "abs_minus_signed_difference": round(abs_total_quantity - signed_total_quantity, 1),
+    }
+
+
+def assert_exact(name: str, actual: object, expected: object) -> None:
+    if actual != expected:
+        raise AssertionError(f"{name} mismatch: expected {expected!r}, got {actual!r}")
+
+
+def assert_close(name: str, actual: float, expected: float, tolerance: float = 1e-9) -> None:
+    if abs(float(actual) - float(expected)) > tolerance:
+        raise AssertionError(f"{name} mismatch: expected {expected!r}, got {actual!r}")
+
+
+def verify_material_monthly(material: pd.DataFrame) -> tuple[pd.DataFrame, dict[str, object]]:
+    material_monthly = (
+        material.groupby("year_month", as_index=False)
+        .agg(
+            unique_material_count=("material_number", "nunique"),
+            total_quantity=("quantity_signed", "sum"),
+        )
+        .sort_values("year_month")
+        .reset_index(drop=True)
+    )
+
+    total_quantity_sum = float(material_monthly["total_quantity"].sum())
+    top_quantity_month = material_monthly.sort_values(
+        ["total_quantity", "year_month"],
+        ascending=[False, True],
+    ).iloc[0]
+
+    assert_close("monthly total_quantity sum", total_quantity_sum, EXPECTED_MATERIAL_TOTAL_QUANTITY)
+    assert_exact("max monthly total_quantity month", top_quantity_month.year_month, EXPECTED_MATERIAL_TOP_QUANTITY_MONTH)
+    assert_close(
+        "max monthly total_quantity value",
+        float(top_quantity_month.total_quantity),
+        EXPECTED_MATERIAL_TOP_QUANTITY_MONTH_VALUE,
+    )
+
+    return material_monthly, {
+        "total_quantity_sum": total_quantity_sum,
+        "top_quantity_month": str(top_quantity_month.year_month),
+        "top_quantity_month_value": float(top_quantity_month.total_quantity),
+    }
+
+
+def verify_material_abc(material_totals: pd.DataFrame) -> tuple[pd.DataFrame, dict[str, object]]:
+    if material_totals.empty:
+        raise AssertionError("Material totals are empty.")
+
+    missing_segment_count = int(material_totals["abc_segment"].isna().sum())
+    assert_exact("missing abc_segment count", missing_segment_count, 0)
+
+    total_material_count = int(material_totals["material_number"].nunique())
+    total_quantity = float(material_totals["total_quantity"].sum())
+
+    abc_summary = (
+        material_totals.groupby("abc_segment", as_index=False)
+        .agg(
+            unique_material_count=("material_number", "nunique"),
+            total_quantity=("total_quantity", "sum"),
+        )
+        .sort_values("abc_segment")
+        .reset_index(drop=True)
+    )
+    abc_summary["quantity_share_pct"] = (
+        abc_summary["total_quantity"] / total_quantity * 100 if total_quantity else 0.0
+    ).round(1)
+    abc_summary["material_share_pct"] = (
+        abc_summary["unique_material_count"] / total_material_count * 100 if total_material_count else 0.0
+    ).round(1)
+
+    unique_material_sum = int(abc_summary["unique_material_count"].sum())
+    assert_exact("ABC unique material sum", unique_material_sum, EXPECTED_MATERIAL_UNIQUE_MATERIALS)
+
+    segment_counts = {segment: 0 for segment in ["A", "B", "C"]}
+    segment_counts.update(
+        {
+            row.abc_segment: int(row.unique_material_count)
+            for row in abc_summary.itertuples(index=False)
         }
     )
 
-    cleaned["zero_quantity_record"] = cleaned["quantity_clean"] == 0
+    return abc_summary, {
+        "unique_material_sum": unique_material_sum,
+        "missing_segment_count": missing_segment_count,
+        "segment_counts": segment_counts,
+    }
 
-    material_totals = (
-        cleaned.groupby("material_number", as_index=False)
-        .agg(total_quantity=("quantity_clean", "sum"))
-        .sort_values("total_quantity", ascending=False)
-    )
-    material_totals["cumulative_share"] = (
-        material_totals["total_quantity"].cumsum() / material_totals["total_quantity"].sum()
-    )
-    material_totals["abc_segment"] = material_totals["cumulative_share"].apply(classify_abc)
 
-    cleaned = cleaned.merge(
-        material_totals[["material_number", "abc_segment"]],
-        on="material_number",
-        how="left",
+def find_material_lookup_file(root: Path) -> Path | None:
+    candidates = sorted(
+        path
+        for path in root.rglob("*")
+        if path.is_file()
+        and path.suffix.lower() in {".xlsx", ".xls"}
+        and normalize_column_name(path.stem) == "regcisciselnik"
     )
-    return cleaned
+    return candidates[0] if candidates else None
+
+
+def load_material_lookup(root: Path) -> dict[str, object]:
+    lookup_path = find_material_lookup_file(root)
+    if lookup_path is None:
+        return {
+            "found": False,
+            "usable": False,
+            "path": None,
+            "matched_material_count": 0,
+            "joined": pd.DataFrame(),
+        }
+
+    lookup_raw = pd.read_excel(lookup_path)
+    normalized_columns = {column: normalize_column_name(column) for column in lookup_raw.columns}
+
+    reg_col = next(
+        (
+            column
+            for column, normalized in normalized_columns.items()
+            if normalized in {"regcis", "regc", "regcismaterialu"}
+        ),
+        None,
+    )
+    name_col = next(
+        (
+            column
+            for column, normalized in normalized_columns.items()
+            if normalized in {"nazev", "nazov", "materialname", "name"}
+        ),
+        None,
+    )
+    min_col = next(
+        (
+            column
+            for column, normalized in normalized_columns.items()
+            if normalized in {"minimumskladu", "minskladu", "minimumskladu", "minimum", "minstock"}
+        ),
+        None,
+    )
+
+    if reg_col is None or min_col is None:
+        return {
+            "found": True,
+            "usable": False,
+            "path": lookup_path,
+            "matched_material_count": 0,
+            "joined": pd.DataFrame(),
+        }
+
+    lookup = lookup_raw.copy()
+    lookup["reg_cis_norm"] = lookup[reg_col].apply(normalize_join_text)
+    lookup = lookup.loc[lookup["reg_cis_norm"] != ""].copy()
+    lookup["minimum_stock"] = lookup[min_col].apply(parse_lookup_numeric)
+    lookup["material_name"] = (
+        lookup[name_col].astype(str).str.strip().where(lookup[name_col].notna(), "")
+        if name_col
+        else ""
+    )
+
+    lookup_keys = []
+    for row in lookup.itertuples(index=False):
+        reg_cis_norm = row.reg_cis_norm
+        candidate_keys = {
+            reg_cis_norm,
+            f"MAT07{reg_cis_norm}",
+        }
+        if not reg_cis_norm.startswith("MAT"):
+            candidate_keys.add(f"MAT{reg_cis_norm}")
+        for join_key in sorted(candidate_keys):
+            lookup_keys.append(
+                {
+                    "join_key": join_key,
+                    "material_name": row.material_name if isinstance(row.material_name, str) else "",
+                    "minimum_stock": float(row.minimum_stock) if not pd.isna(row.minimum_stock) else np.nan,
+                }
+            )
+
+    joined_lookup = (
+        pd.DataFrame(lookup_keys)
+        .sort_values(["join_key", "material_name"])
+        .drop_duplicates("join_key")
+        .reset_index(drop=True)
+    )
+
+    return {
+        "found": True,
+        "usable": True,
+        "path": lookup_path,
+        "matched_material_count": 0,
+        "joined": joined_lookup,
+    }
+
+
+def attach_material_lookup(material_totals: pd.DataFrame, root: Path) -> dict[str, object]:
+    lookup_meta = load_material_lookup(root)
+    material_totals_named = material_totals.copy()
+    material_totals_named["join_key"] = material_totals_named["material_number"].apply(normalize_join_text)
+    material_totals_named["material_name"] = ""
+    material_totals_named["minimum_stock"] = np.nan
+
+    if lookup_meta["usable"]:
+        material_totals_named = material_totals_named.merge(
+            lookup_meta["joined"],
+            on="join_key",
+            how="left",
+            suffixes=("", "_lookup"),
+        )
+        if "material_name_lookup" in material_totals_named.columns:
+            material_totals_named["material_name"] = (
+                material_totals_named["material_name_lookup"].fillna("").astype(str).str.strip()
+            )
+            material_totals_named = material_totals_named.drop(columns=["material_name_lookup"])
+        if "minimum_stock_lookup" in material_totals_named.columns:
+            material_totals_named["minimum_stock"] = pd.to_numeric(
+                material_totals_named["minimum_stock_lookup"], errors="coerce"
+            )
+            material_totals_named = material_totals_named.drop(columns=["minimum_stock_lookup"])
+        lookup_meta["matched_material_count"] = int(material_totals_named["minimum_stock"].notna().sum())
+
+    material_totals_named["display_label"] = np.where(
+        material_totals_named["material_name"].astype(str).str.strip() != "",
+        material_totals_named["material_name"].astype(str).str.strip(),
+        material_totals_named["material_number"],
+    )
+    return {
+        **lookup_meta,
+        "material_totals": material_totals_named,
+    }
+
+
+def compute_stock_minimum_comparison(material_totals_named: pd.DataFrame) -> pd.DataFrame:
+    if material_totals_named.empty or "minimum_stock" not in material_totals_named.columns:
+        return pd.DataFrame()
+
+    comparison = material_totals_named.loc[material_totals_named["minimum_stock"].notna()].copy()
+    if comparison.empty:
+        return comparison
+
+    comparison["difference"] = comparison["minimum_stock"] - comparison["average_quantity"]
+    comparison = comparison.loc[comparison["difference"] > 0].copy()
+    if comparison.empty:
+        return comparison
+
+    return (
+        comparison.sort_values(["difference", "material_number"], ascending=[False, True])
+        .head(TOP_MATERIAL_LIMIT)
+        .reset_index(drop=True)
+    )
+
+
+def build_material_views(material: pd.DataFrame) -> dict[str, object]:
+    material_validation = summarize_material_quantity_validation(material)
+    material_totals = aggregate_material_totals(material)
+    material_lookup = attach_material_lookup(material_totals, ROOT)
+    material_totals_named = material_lookup["material_totals"]
+
+    kpi_summary = {
+        "total_rows": int(len(material)),
+        "unique_materials": int(material["material_number"].nunique()),
+        "total_quantity": float(material["quantity_signed"].sum()),
+        "average_quantity": round(float(material["quantity_signed"].mean()), 1),
+        "median_quantity": round(float(material["quantity_signed"].median()), 1),
+        "zero_rows": int(material["zero_quantity_record"].sum()),
+        "parse_nan_count": int(material_validation["parse_nan_count"]),
+        "negative_rows": int(material_validation["negative_row_count"]),
+    }
+    assert_exact("material total movement rows", kpi_summary["total_rows"], EXPECTED_MATERIAL_ROW_COUNT)
+    assert_exact("material unique materials", kpi_summary["unique_materials"], EXPECTED_MATERIAL_UNIQUE_MATERIALS)
+    assert_close("material total quantity", kpi_summary["total_quantity"], EXPECTED_MATERIAL_TOTAL_QUANTITY)
+    assert_close("material average quantity", kpi_summary["average_quantity"], EXPECTED_MATERIAL_AVERAGE_QUANTITY)
+    assert_close("material median quantity", kpi_summary["median_quantity"], EXPECTED_MATERIAL_MEDIAN_QUANTITY)
+    assert_exact("material zero quantity rows", kpi_summary["zero_rows"], EXPECTED_MATERIAL_ZERO_ROWS)
+    assert_exact("material parse NaN count", kpi_summary["parse_nan_count"], EXPECTED_MATERIAL_PARSE_NAN_COUNT)
+    assert_exact("material negative row count", kpi_summary["negative_rows"], EXPECTED_MATERIAL_NEGATIVE_ROWS)
+
+    material_monthly, monthly_summary = verify_material_monthly(material)
+    abc_summary, abc_verification = verify_material_abc(material_totals)
+
+    top_materials = material_totals_named.head(TOP_MATERIAL_LIMIT).copy()
+    comparison_chart = compute_stock_minimum_comparison(material_totals_named)
+
+    return {
+        "validation": material_validation,
+        "kpi_summary": kpi_summary,
+        "material_monthly": material_monthly,
+        "monthly_summary": monthly_summary,
+        "abc_summary": abc_summary,
+        "abc_verification": abc_verification,
+        "material_totals": material_totals_named,
+        "top_materials": top_materials,
+        "lookup": {
+            "found": bool(material_lookup["found"]),
+            "usable": bool(material_lookup["usable"]),
+            "path": str(material_lookup["path"]) if material_lookup["path"] else None,
+            "matched_material_count": int(material_lookup["matched_material_count"]),
+        },
+        "comparison_chart": comparison_chart,
+        "comparison_chart_generated": bool(not comparison_chart.empty),
+    }
 
 
 def fmt_int(value: float | int) -> str:
@@ -421,38 +977,6 @@ def material_month_label_compact(value: str) -> str:
 def material_month_label_full(value: str) -> str:
     year, month = value.split("-")
     return f"{MONTH_NAMES_SK.get(int(month), month).capitalize()} {year}"
-
-
-def classify_prefix(row: pd.Series) -> str:
-    if float(row["quantity_share_pct"]) >= 10:
-        return "objemovo dominantny"
-    if float(row["movement_share_pct"]) >= 5:
-        return "frekventovany"
-    if int(row["unique_material_count"]) >= 20:
-        return "sirsie portfolio"
-    return "stabilny"
-
-
-def classify_material_segment(row: pd.Series) -> tuple[str, str]:
-    quantity_share_pct = float(row["quantity_share_pct"])
-    movement_share_pct = float(row["movement_share_pct"])
-    active_months = int(row["active_months"])
-    peak_month_share_pct = float(row["peak_month_share_pct"])
-
-    if quantity_share_pct >= 5 or movement_share_pct >= 7:
-        if quantity_share_pct >= 5:
-            return "Kritické", "nesu aspon 5 % celkoveho objemu"
-        return "Kritické", "patria medzi frekvencne najvytazenejsie prefixy"
-
-    if active_months < 12 or peak_month_share_pct >= 35:
-        if active_months < 12:
-            return "Rizikové", "aktivita je kratka alebo epizodicka"
-        return "Rizikové", "aktivita je silno koncentrovana do jedneho mesiaca"
-
-    if active_months >= 30 and movement_share_pct >= 1 and peak_month_share_pct < 10:
-        return "Stabilné", "maju pravidelnu aktivitu napriec obdobiami"
-
-    return "Pomalyobrátkové", "maju nizku frekvenciu aj nizky objem"
 
 
 def compute_advanced_ride_analytics(jazdy: pd.DataFrame, trips_per_vehicle: pd.DataFrame) -> dict:
@@ -561,145 +1085,146 @@ def compute_advanced_ride_analytics(jazdy: pd.DataFrame, trips_per_vehicle: pd.D
     }
 
 
-def compute_advanced_material_analytics(material: pd.DataFrame, prefix_summary: pd.DataFrame) -> dict:
-    # This is advanced analytics because it converts raw movement/quantity history into explicit operational classes.
-    # The rules are transparent and interpretable, which is more defensible here than a black-box clustering model.
-    segmented = prefix_summary.copy()
-    segment_meta = segmented.apply(classify_material_segment, axis=1, result_type="expand")
-    segmented["segment"] = segment_meta[0]
-    segmented["segment_reason"] = segment_meta[1]
+def compute_advanced_material_analytics(material_views: dict[str, object]) -> dict:
+    abc_summary = material_views["abc_summary"]
+    top_materials = material_views["top_materials"]
+    material_totals = material_views["material_totals"]
+    comparison_chart = material_views["comparison_chart"]
+    lookup_info = material_views["lookup"]
+    total_quantity = float(material_views["kpi_summary"]["total_quantity"])
 
-    segment_order = ["Kritické", "Stabilné", "Rizikové", "Pomalyobrátkové"]
-    segmented["segment_order"] = segmented["segment"].map({name: idx for idx, name in enumerate(segment_order)})
+    top_material = top_materials.iloc[0]
+    top10_share_pct = round(float(top_materials["total_quantity"].sum() / total_quantity * 100), 1) if total_quantity else 0.0
+    deficit_candidates = pd.DataFrame()
+    if "minimum_stock" in material_totals.columns:
+        deficit_candidates = material_totals.loc[material_totals["minimum_stock"].notna()].copy()
+        if not deficit_candidates.empty:
+            deficit_candidates["difference"] = deficit_candidates["minimum_stock"] - deficit_candidates["average_quantity"]
+            deficit_candidates = deficit_candidates.loc[deficit_candidates["difference"] > 0].copy()
 
-    segment_summary = (
-        segmented.groupby(["segment", "segment_order"], as_index=False)
-        .agg(
-            prefix_count=("material_prefix", "size"),
-            movement_count=("movement_count", "sum"),
-            quantity_share_pct=("quantity_share_pct", "sum"),
+    a_segment = abc_summary.loc[abc_summary["abc_segment"] == "A"]
+    a_segment_count = int(a_segment["unique_material_count"].iloc[0]) if not a_segment.empty else 0
+    deficit_count = int(len(deficit_candidates))
+    matched_material_count = int(lookup_info["matched_material_count"])
+
+    detail_rows = []
+    detail_headers = ["Materiál", "MAT_NR", "ABC", "Celkové množstvo", "Podiel množstva", "Priemerné množstvo"]
+    detail_title = "Top materiály podľa objemu"
+    detail_intro = "Top 10 materiálov vychádza zo súčtu parsed quantity podľa MAT_NR. Ak je dostupný lookup, názov materiálu nahrádza kód."
+    for row in top_materials.itertuples(index=False):
+        detail_rows.append(
+            {
+                "label": row.display_label,
+                "material_number": row.material_number,
+                "abc_segment": row.abc_segment,
+                "total_quantity": float(row.total_quantity),
+                "quantity_share_pct": float(row.quantity_share_pct),
+                "average_quantity": float(row.average_quantity),
+            }
         )
-        .sort_values("segment_order")
-    )
-    segment_summary["movement_share_pct"] = (
-        segment_summary["movement_count"] / len(material) * 100
-    ).round(1)
 
-    critical_prefix = segmented.sort_values(
-        ["quantity_share_pct", "movement_share_pct", "material_prefix"],
-        ascending=[False, False, True],
-    ).iloc[0]
-    risky_candidates = segmented.loc[segmented["segment"] == "Rizikové"].copy()
-    risky_prefix = (
-        risky_candidates.sort_values(
-            ["peak_month_share_pct", "movement_count", "material_prefix"],
-            ascending=[False, False, True],
-        ).iloc[0]
-        if not risky_candidates.empty
-        else None
-    )
-
-    priority_candidates = segmented.loc[segmented["segment"].isin(["Kritické", "Rizikové"])].copy()
-    if priority_candidates.empty:
-        priority_candidates = segmented.copy()
-    priority_candidates["priority_order"] = priority_candidates["segment"].map(
-        {"Kritické": 0, "Rizikové": 1}
-    ).fillna(2)
-    priority_prefixes = priority_candidates.sort_values(
-        ["priority_order", "quantity_share_pct", "peak_month_share_pct", "movement_count"],
-        ascending=[True, False, False, False],
-    ).head(10)
-
-    critical_summary = segment_summary.loc[segment_summary["segment"] == "Kritické"].iloc[0]
-    risky_summary_rows = segment_summary.loc[segment_summary["segment"] == "Rizikové"]
-    risky_summary = (
-        risky_summary_rows.iloc[0]
-        if not risky_summary_rows.empty
-        else pd.Series({"prefix_count": 0, "quantity_share_pct": 0.0, "movement_share_pct": 0.0})
-    )
-    risky_interpretation = (
-        f"zatiaľ čo prefix {risky_prefix.material_prefix} reprezentuje bursty alebo krátku históriu a zaslúži si "
-        f"samostatný monitoring."
-        if risky_prefix is not None
-        else "rizikový segment je v tomto exporte prázdny, čo znamená, že pravidlá nenašli epizodickú skupinu vyžadujúcu samostatný monitoring."
-    )
+    if not comparison_chart.empty:
+        detail_headers = ["Materiál", "MAT_NR", "Minimum skladu", "Priemerné množstvo", "Deficit", "ABC"]
+        detail_title = "Materiály pod minimom skladu"
+        detail_intro = "Tabuľka ukazuje najväčšie deficity podľa rozdielu Minimum skladu - priemerné množstvo."
+        detail_rows = [
+            {
+                "label": row.display_label,
+                "material_number": row.material_number,
+                "minimum_stock": float(row.minimum_stock),
+                "average_quantity": float(row.average_quantity),
+                "difference": float(row.difference),
+                "abc_segment": row.abc_segment,
+            }
+            for row in comparison_chart.itertuples(index=False)
+        ]
 
     return {
-        "question": "Ktoré materiálové prefixy sú z pohľadu prevádzky stabilné, kritické, rizikové alebo pomalyobrátkové?",
-        "method_title": "Transparentná segmentácia prefixov podľa objemu, frekvencie a časovej koncentrácie",
+        "question": "Ako sa celkový objem rozdeľuje medzi ABC segmenty a ktoré materiály nesú najväčší objem alebo deficit voči minimu skladu?",
+        "method_title": "Kumulatívna ABC segmentácia a rebríček materiálov podľa objemu",
         "method_points": [
-            "Kritické prefixy nesú aspoň 5 % celkového objemu alebo patria medzi frekvenčne najvyťaženejšie prefixy nad 7 % pohybov.",
-            "Rizikové prefixy sú tie, ktoré majú krátku históriu do 12 aktívnych mesiacov alebo viac ako 35 % svojej aktivity v jednom mesiaci.",
-            "Stabilné prefixy sa hýbu pravidelne aspoň 30 mesiacov, držia aspoň 1 % pohybov a ich aktivita nie je koncentrovaná do jedného mesiaca. Ostatné sú pomalyobrátkové.",
+            "Najprv sa pre každý MAT_NR spočíta celkové parsed množstvo a zoradí sa zostupne.",
+            "ABC segment vzniká z kumulatívneho podielu na celkovom objeme: A do 80 %, B do 95 %, C zvyšok.",
+            "Ak je dostupný RegCis lookup, názov materiálu nahrádza MAT_NR a navyše sa počíta deficit Minimum skladu - priemerné množstvo.",
         ],
         "summary_cards": [
             {
-                "label": "Kritické prefixy",
-                "value": int(critical_summary.prefix_count),
-                "sub": "nesú najväčší operačný dopad",
+                "label": "Materiály v segmente A",
+                "value": a_segment_count,
+                "sub": "kumulatívne kryjú prvých 80 % objemu",
                 "format": "int",
             },
             {
-                "label": "Podiel kritického objemu",
-                "value": round(float(critical_summary.quantity_share_pct), 1),
-                "sub": "percent z celkoveho mnozstva",
+                "label": "Top 10 podiel objemu",
+                "value": top10_share_pct,
+                "sub": "podiel top 10 materiálov na celkovom objeme",
                 "format": "pct1",
             },
             {
-                "label": "Rizikové prefixy",
-                "value": int(risky_summary.prefix_count),
-                "sub": "epizodická alebo bursty aktivita",
+                "label": "Materiály pod minimom",
+                "value": deficit_count,
+                "sub": (
+                    f"z {matched_material_count} materialov s lookupom"
+                    if lookup_info["found"] and lookup_info["usable"]
+                    else "lookup minima sa nenasiel"
+                ),
                 "format": "int",
             },
         ],
         "chart": [
             {
-                "label": row.segment,
+                "label": row.abc_segment,
                 "value": float(row.quantity_share_pct),
             }
-            for row in segment_summary.itertuples(index=False)
+            for row in abc_summary.itertuples(index=False)
         ],
+        "chart_title": "Podiel objemu podľa ABC segmentu",
+        "chart_intro": "Donut zobrazuje, koľko percent celkového objemu pripadá na segmenty A, B a C.",
         "segment_table": [
             {
-                "segment": row.segment,
-                "prefix_count": int(row.prefix_count),
-                "movement_share_pct": float(row.movement_share_pct),
+                "segment": row.abc_segment,
+                "material_count": int(row.unique_material_count),
+                "material_share_pct": float(row.material_share_pct),
                 "quantity_share_pct": float(row.quantity_share_pct),
             }
-            for row in segment_summary.itertuples(index=False)
+            for row in abc_summary.itertuples(index=False)
         ],
-        "priority_table": [
-            {
-                "material_prefix": row.material_prefix,
-                "segment": row.segment,
-                "movement_share_pct": float(row.movement_share_pct),
-                "quantity_share_pct": float(row.quantity_share_pct),
-                "active_months": int(row.active_months),
-                "peak_month_share_pct": float(row.peak_month_share_pct),
-                "reason": row.segment_reason,
-            }
-            for row in priority_prefixes.itertuples(index=False)
-        ],
+        "segment_table_title": "Prehľad ABC segmentov",
+        "segment_table_intro": "Tabuľka sumarizuje počty unikátnych materiálov aj podiel objemu v každom ABC segmente.",
+        "detail_table": detail_rows,
+        "detail_table_title": detail_title,
+        "detail_table_headers": detail_headers,
+        "detail_table_intro": detail_intro,
         "result_text": (
-            f"Kritická skupina má iba {int(critical_summary.prefix_count)} prefixov, ale nesie "
-            f"{critical_summary.quantity_share_pct:.1f} % celkového objemu. Najväčší objemový dopad má "
-            f"{critical_prefix.material_prefix} ({critical_prefix.quantity_share_pct:.1f} %)."
+            f"Najväčší objem nesie materiál {top_material.display_label} ({top_material.material_number}) s objemom "
+            f"{top_material.total_quantity:,.1f}. Top 10 materiálov spolu tvorí {top10_share_pct:.1f} % celkového objemu."
         ),
         "interpretation": (
-            f"Segmentácia ukazuje, že najväčšie prevádzkové riziko je sústredené v malej skupine kritických prefixov, "
-            f"{risky_interpretation} Toto je vhodnejsie a obhajitelnejsie ako netransparentny clustering."
+            "ABC segmentácia ukazuje koncentráciu objemu na malej skupine materiálov. "
+            "To je bližšie Tableau logike, pretože priamo sleduje MAT_NR na úrovni materiálu."
         ),
         "recommendations": [
-            "Kritické prefixy sledovať oddelene, lebo nesú väčšinu objemu alebo frekvencie a majú najväčší dopad na prevádzku.",
-            "Rizikové prefixy porovnať s plánom nákupu alebo jednorazovými projektmi, aby sa odlíšila sezónnosť od abnormality.",
-            "Pomalyobrátkové prefixy použiť ako kandidáta na revíziu sortimentu alebo minimálnych zásob.",
+            "Segment A sledovať prioritne, lebo rozhoduje o väčšine objemu materiálu.",
+            "Top materiály podľa objemu použiť ako základ pre ďalšiu kontrolu spotreby alebo zásobovania.",
+            (
+                "Ak bude dostupný lookup s minimom skladu, deficitné materiály riešiť prednostne."
+                if not comparison_chart.empty
+                else "Porovnanie s minimom skladu ostáva vypnuté, kým nebude dostupný lookup RegCis_ciselnik.xlsx."
+            ),
         ],
     }
 
 
-def build_dashboard_data(jazdy: pd.DataFrame, material: pd.DataFrame) -> dict:
+def build_dashboard_data(
+    jazdy: pd.DataFrame,
+    material: pd.DataFrame,
+    *,
+    material_views: dict[str, object] | None = None,
+) -> dict:
     jazdy["trip_date"] = pd.to_datetime(jazdy["trip_date"])
     material["movement_date"] = pd.to_datetime(material["movement_date"])
+    if material_views is None:
+        material_views = build_material_views(material)
 
     valid_jazdy = jazdy.loc[~jazdy["near_zero_trip"]].copy()
     tableau_valid_jazdy = jazdy.loc[jazdy["tableau_valid_trip"]].copy()
@@ -762,70 +1287,22 @@ def build_dashboard_data(jazdy: pd.DataFrame, material: pd.DataFrame) -> dict:
         .rename_axis("ride_category")
         .reset_index(name="trip_count")
     )
-    material_monthly = (
-        material.groupby("year_month", as_index=False)
-        .agg(
-            movement_count=("material_number", "size"),
-            total_quantity=("quantity_clean", "sum"),
-        )
-        .sort_values("year_month")
-    )
-    prefix_summary = (
-        material.groupby("material_prefix", as_index=False)
-        .agg(
-            movement_count=("material_number", "size"),
-            total_quantity=("quantity_clean", "sum"),
-            unique_material_count=("material_number", "nunique"),
-        )
-        .sort_values(["movement_count", "material_prefix"], ascending=[False, True])
-    )
-    prefix_activity = (
-        material.groupby("material_prefix", as_index=False)
-        .agg(
-            active_months=("year_month", "nunique"),
-            zero_qty_count=("zero_quantity_record", "sum"),
-        )
-    )
-    prefix_peak_month = (
-        material.groupby(["material_prefix", "year_month"], as_index=False)
-        .agg(month_move_count=("material_number", "size"))
-        .groupby("material_prefix", as_index=False)
-        .agg(peak_month_count=("month_move_count", "max"))
-    )
-    abc_summary = (
-        material.groupby("abc_segment", as_index=False)
-        .agg(
-            unique_material_count=("material_number", "nunique"),
-            movement_count=("material_number", "size"),
-            total_quantity=("quantity_clean", "sum"),
-        )
-        .sort_values("abc_segment")
-    )
-
-    total_material_quantity = float(material["quantity_clean"].sum())
-    prefix_summary["movement_share_pct"] = (
-        prefix_summary["movement_count"] / len(material) * 100
-    ).round(1)
-    prefix_summary["quantity_share_pct"] = (
-        prefix_summary["total_quantity"] / total_material_quantity * 100
-    ).round(1)
-    prefix_summary = prefix_summary.merge(prefix_activity, on="material_prefix", how="left")
-    prefix_summary = prefix_summary.merge(prefix_peak_month, on="material_prefix", how="left")
-    prefix_summary["zero_qty_share_pct"] = (
-        prefix_summary["zero_qty_count"] / prefix_summary["movement_count"] * 100
-    ).round(2)
-    prefix_summary["peak_month_share_pct"] = (
-        prefix_summary["peak_month_count"] / prefix_summary["movement_count"] * 100
-    ).round(1)
-    prefix_summary["profile"] = prefix_summary.apply(classify_prefix, axis=1)
-
-    abc_summary["movement_share_pct"] = (abc_summary["movement_count"] / len(material) * 100).round(1)
-    abc_summary["quantity_share_pct"] = (
-        abc_summary["total_quantity"] / total_material_quantity * 100
-    ).round(1)
+    signed_total_quantity_raw = float(material["quantity_signed"].sum())
+    abs_total_quantity_raw = float(material["quantity_abs"].sum())
+    material_validation = material_views["validation"]
+    signed_total_quantity = round(signed_total_quantity_raw, 1)
+    abs_total_quantity = round(abs_total_quantity_raw, 1)
+    abs_minus_signed_difference = material_validation["abs_minus_signed_difference"]
+    total_material_quantity = signed_total_quantity_raw
+    material_monthly = material_views["material_monthly"]
+    abc_summary = material_views["abc_summary"]
+    top_materials = material_views["top_materials"]
+    material_totals = material_views["material_totals"]
+    comparison_chart = material_views["comparison_chart"]
+    lookup_info = material_views["lookup"]
 
     advanced_ride_analytics = compute_advanced_ride_analytics(jazdy, trips_per_vehicle)
-    advanced_material_analytics = compute_advanced_material_analytics(material, prefix_summary)
+    advanced_material_analytics = compute_advanced_material_analytics(material_views)
 
     most_used_vehicle = trips_per_vehicle.iloc[0]
     least_used_vehicle = trips_per_vehicle.iloc[-1]
@@ -842,15 +1319,10 @@ def build_dashboard_data(jazdy: pd.DataFrame, material: pd.DataFrame) -> dict:
         ["inefficient_share_pct", "trip_count", "vehicle_id"],
         ascending=[False, False, True],
     ).iloc[0]
-    top_prefix_by_movements = prefix_summary.iloc[0]
-    top_prefix_by_quantity = prefix_summary.sort_values(
-        ["total_quantity", "material_prefix"],
-        ascending=[False, True],
-    ).iloc[0]
-    top_quantity_month = material_monthly.sort_values(
-        ["total_quantity", "year_month"],
-        ascending=[False, True],
-    ).iloc[0]
+    top_material_by_quantity = top_materials.iloc[0]
+    top_quantity_month = material_monthly.loc[
+        material_monthly["year_month"] == material_views["monthly_summary"]["top_quantity_month"]
+    ].iloc[0]
 
     dashboard = {
         "meta": {
@@ -901,17 +1373,17 @@ def build_dashboard_data(jazdy: pd.DataFrame, material: pd.DataFrame) -> dict:
                 ],
                 "limitations": [
                     "Dataset obsahuje pohyby materialu, nie presny stav skladu v case.",
-                    "Nie je uvedeny smer pohybu, jednotka mnozstva ani cena materialu.",
-                    "Materialovy prefix je odvodeny z prvych 8 znakov kodu materialu a sluzi len ako jednoducha skupina.",
+                    "Smer pohybu je odvodeny len zo znamienka mnozstva, nie z explicitneho typoveho pola. Jednotka mnozstva ani cena materialu v datasete nie su.",
+                    "Bez lookupu nie je v datasete nazov materialu ani minimalny sklad, preto HTML fallbackuje na MAT_NR.",
                 ],
                 "answerable": [
-                    "top prefixy, sezonnost pohybov a objemov",
-                    "ABC segmentaciu a frekvenciu pohybov materialov",
-                    "identifikaciu nulovych mnozstiev a dominantnych skupin",
+                    "unikatne materialy a objem pohybov po mesiacoch",
+                    "ABC segmentaciu a top materialy podla objemu",
+                    "identifikaciu nulovych mnozstiev a volitelne porovnanie s minimom skladu",
                 ],
                 "not_answerable": [
                     "presny stav skladu v case",
-                    "prijem vs. vydaj, cena a skladova lokacia",
+                    "explicitny typ prijmu vs. vydaja, cena a skladova lokacia",
                 ],
             },
         },
@@ -1008,22 +1480,32 @@ def build_dashboard_data(jazdy: pd.DataFrame, material: pd.DataFrame) -> dict:
             "kpi": {
                 "Celkovy pocet pohybov": int(len(material)),
                 "Pocet materialov": int(material["material_number"].nunique()),
-                "Pocet prefixov": int(material["material_prefix"].nunique()),
                 "Celkove mnozstvo": round(total_material_quantity, 0),
-                "Priemerne mnozstvo": round(float(material["quantity_clean"].mean()), 1),
-                "Median mnozstva": round(float(material["quantity_clean"].median()), 1),
+                "Priemerne mnozstvo": round(float(material["quantity_signed"].mean()), 1),
+                "Median mnozstva": round(float(material["quantity_signed"].median()), 1),
             },
             "totals": {
-                "zero_quantity_record_count": int(material["zero_quantity_record"].sum()),
+                "zero_quantity_record_count": int(material_validation["zero_row_count"]),
+                "signed_total_quantity": round(signed_total_quantity, 1),
+                "netto_signed_effect": round(signed_total_quantity, 1),
+                "abs_total_quantity": round(abs_total_quantity, 1),
+                "positive_total_quantity": round(float(material_validation["positive_total_quantity"]), 1),
+                "negative_total_quantity_abs": round(float(material_validation["negative_total_quantity_abs"]), 1),
+                "negative_row_count": int(material_validation["negative_row_count"]),
+                "parse_nan_count": int(material_validation["parse_nan_count"]),
+                "abs_minus_signed_difference": round(abs_minus_signed_difference, 1),
                 "top_quantity_month": month_label(top_quantity_month.year_month),
                 "top_quantity_month_value": round(float(top_quantity_month.total_quantity), 1),
             },
+            "validation": material_validation,
+            "lookup": lookup_info,
+            "comparison_chart_generated": bool(material_views["comparison_chart_generated"]),
             "charts": {
-                "pohyby_podla_mesiaca": [
+                "unikatne_materialy_podla_mesiaca": [
                     {
                         "label": material_month_label_compact(row.year_month),
                         "tooltipLabel": material_month_label_full(row.year_month),
-                        "value": int(row.movement_count),
+                        "value": int(row.unique_material_count),
                     }
                     for row in material_monthly.itertuples(index=False)
                 ],
@@ -1035,33 +1517,43 @@ def build_dashboard_data(jazdy: pd.DataFrame, material: pd.DataFrame) -> dict:
                     }
                     for row in material_monthly.itertuples(index=False)
                 ],
-                "top_prefixy_podla_pohybov": [
-                    {"label": row.material_prefix, "value": int(row.movement_count)}
-                    for row in prefix_summary.head(8).itertuples(index=False)
+                "top_materialy_podla_objemu": [
+                    {
+                        "label": row.display_label,
+                        "value": round(float(row.total_quantity), 1),
+                    }
+                    for row in top_materials.itertuples(index=False)
                 ],
                 "abc_segmenty": [
                     {"label": row.abc_segment, "value": int(row.unique_material_count)}
                     for row in abc_summary.itertuples(index=False)
                 ],
+                "porovnanie_priemerneho_mnozstva_a_minima_skladu": [
+                    {
+                        "label": row.display_label,
+                        "value": round(float(row.difference), 1),
+                    }
+                    for row in comparison_chart.itertuples(index=False)
+                ],
             },
-            "prefix_table": [
+            "top_material_table": [
                 {
-                    "material_prefix": row.material_prefix,
-                    "movement_count": int(row.movement_count),
-                    "movement_share_pct": float(row.movement_share_pct),
+                    "label": row.display_label,
+                    "material_number": row.material_number,
+                    "abc_segment": row.abc_segment,
                     "total_quantity": round(float(row.total_quantity), 1),
-                    "quantity_share_pct": float(row.quantity_share_pct),
-                    "unique_material_count": int(row.unique_material_count),
-                    "profile": row.profile,
+                    "quantity_share_pct": round(float(row.quantity_share_pct), 1),
+                    "average_quantity": round(float(row.average_quantity), 1),
                 }
-                for row in prefix_summary.head(10).itertuples(index=False)
+                for row in top_materials.itertuples(index=False)
             ],
             "comment": (
-                f"Najaktivnejsi prefix podla poctu pohybov je {top_prefix_by_movements.material_prefix} "
-                f"({int(top_prefix_by_movements.movement_count)} pohybov). "
-                f"Podla celkoveho mnozstva jednoznacne dominuje {top_prefix_by_quantity.material_prefix} "
-                f"({top_prefix_by_quantity.total_quantity:,.1f}). "
-                f"Najsilnejsi mesiac podla objemu je {month_label(top_quantity_month.year_month)}."
+                f"Tableau-parity objem pohybov = {signed_total_quantity:,.1f} ako SUM(INT(MNOZSTVO)); "
+                f"unikatne materialy po mesiacoch sa pocitaju ako DISTINCTCOUNT(MAT_NR). "
+                f"Najvacsi objem ma material {top_material_by_quantity.display_label} "
+                f"({top_material_by_quantity.material_number}) s objemom {top_material_by_quantity.total_quantity:,.1f}. "
+                f"Najsilnejsi mesiac podla objemu pohybov je {month_label(top_quantity_month.year_month)}. "
+                f"Lookup minima skladu bol {'najdeny' if lookup_info['found'] else 'nenajdeny'}."
             ),
         },
         "pokrocilejsia_analytika": {
@@ -1071,7 +1563,8 @@ def build_dashboard_data(jazdy: pd.DataFrame, material: pd.DataFrame) -> dict:
         "porovnanie_html_vs_tableau": {
             "message": (
                 "RIDES sekcia v HTML je zosuladena s Tableau na urovni COUNT/COUNTD KPI, 6 kategorii jazd a logiky "
-                "filtra Zobrazit iba validne jazdy."
+                "filtra Zobrazit iba validne jazdy. Material sekcia je zosuladena na DISTINCTCOUNT(MAT_NR) po mesiacoch, "
+                "SUM(parsed_quantity) a ABC segmentaciu podla kumulativneho podielu objemu."
             )
         },
     }
@@ -1309,13 +1802,13 @@ def build_html(dashboard: dict) -> str:
             {
                 "label": "Unikatne materialy",
                 "value": fmt_int(material["kpi"]["Pocet materialov"]),
-                "sub": fmt_int(material["kpi"]["Pocet prefixov"]) + " prefixov",
+                "sub": "DISTINCTCOUNT(MAT_NR)",
                 "color": "var(--accent1)",
             },
             {
                 "label": "Celkove mnozstvo",
                 "value": fmt_compact(material["kpi"]["Celkove mnozstvo"], 1),
-                "sub": "sumar cez vsetky pohyby",
+                "sub": "SUM(parsed_quantity)",
                 "color": "var(--accent2)",
             },
             {
@@ -1339,18 +1832,14 @@ def build_html(dashboard: dict) -> str:
         ]
     )
 
-    prefix_rows = [
-        [
-            item["material_prefix"],
-            fmt_int(item["movement_count"]),
-            fmt_pct(item["movement_share_pct"]),
-            fmt_compact(item["total_quantity"], 1),
-            fmt_pct(item["quantity_share_pct"]),
-            fmt_int(item["unique_material_count"]),
-            item["profile"],
-        ]
-        for item in material["prefix_table"]
-    ]
+    stock_minimum_card = ""
+    if material["comparison_chart_generated"]:
+        stock_minimum_card = """
+      <div class="card canvas-card">
+        <div class="card-title">Porovnanie priemerneho množstva a minima skladu</div>
+        <canvas id="chartMaterialMinStockComparison" height="260"></canvas>
+      </div>
+        """
 
     material_section = f"""
     <section id="tab-material" class="section">
@@ -1359,20 +1848,20 @@ def build_html(dashboard: dict) -> str:
 
       <div class="kpi-row">{material_kpis}</div>
 
-      <div class="grid-2">
+        <div class="grid-2">
         <div class="card canvas-card">
-          <div class="card-title">Pohyby materialu podla mesiaca</div>
-          <canvas id="chartMaterialMoves" height="220"></canvas>
+          <div class="card-title">Unikátne materiály podľa mesiaca</div>
+          <canvas id="chartMaterialUnique" height="220"></canvas>
         </div>
         <div class="card canvas-card">
-          <div class="card-title">Celkove mnozstvo podla mesiaca</div>
+          <div class="card-title">Objem pohybov podľa mesiaca</div>
           <canvas id="chartMaterialQty" height="220"></canvas>
         </div>
       </div>
 
-      <div class="grid-13">
+      <div class="grid-2">
         <div class="card canvas-card">
-          <div class="card-title">ABC segmenty podla poctu materialov</div>
+          <div class="card-title">ABC segmenty podľa počtu materiálov</div>
           <div class="donut-panel">
             <div class="donut-canvas-wrap">
               <canvas id="chartAbcSegments" height="260"></canvas>
@@ -1381,30 +1870,17 @@ def build_html(dashboard: dict) -> str:
           </div>
         </div>
         <div class="card canvas-card">
-          <div class="card-title">Top prefixy podla poctu pohybov</div>
-          <canvas id="chartTopPrefixes" height="260"></canvas>
+          <div class="card-title">Top materiály podľa objemu</div>
+          <canvas id="chartTopMaterials" height="260"></canvas>
         </div>
       </div>
 
-      {render_table(
-          "Detail top prefixov",
-          [
-              "Prefix",
-              "Pohyby",
-              "Podiel pohybov",
-              "Celkove mnozstvo",
-              "Podiel mnozstva",
-              "Unikatne materialy",
-              "Profil",
-          ],
-          prefix_rows,
-          intro="Tabulka odlisuje prefixy, ktore su frekvencne dominantne, od prefixov, ktore nesu vacsinu objemu.",
-      )}
+      {stock_minimum_card}
 
       <div class="insight">
         <strong>Rychla interpretacia:</strong>
-        Pocet pohybov a celkove mnozstvo treba citat oddelene. Prefix, ktory vedie v pocte pohybov, nemusi byt
-        objemovo najdolezitejsi a naopak.
+        Unikatne materialy po mesiacoch sleduju DISTINCTCOUNT(MAT_NR), zatial co objem pohybov ostava SUM(parsed_quantity).
+        ABC a top materialy su preto pocitane priamo na urovni MAT_NR, nie cez odvodene skupiny.
       </div>
     </section>
     """
@@ -1436,24 +1912,36 @@ def build_html(dashboard: dict) -> str:
     material_segment_rows = [
         [
             item["segment"],
-            fmt_int(item["prefix_count"]),
-            fmt_pct(item["movement_share_pct"], 1),
+            fmt_int(item["material_count"]),
+            fmt_pct(item["material_share_pct"], 1),
             fmt_pct(item["quantity_share_pct"], 1),
         ]
         for item in advanced["material"]["segment_table"]
     ]
-    material_priority_rows = [
-        [
-            item["material_prefix"],
-            item["segment"],
-            fmt_pct(item["movement_share_pct"], 1),
-            fmt_pct(item["quantity_share_pct"], 1),
-            fmt_int(item["active_months"]),
-            fmt_pct(item["peak_month_share_pct"], 1),
-            item["reason"],
-        ]
-        for item in advanced["material"]["priority_table"]
-    ]
+    material_detail_rows = []
+    for item in advanced["material"]["detail_table"]:
+        if advanced["material"]["detail_table_title"] == "Materiály pod minimom skladu":
+            material_detail_rows.append(
+                [
+                    item["label"],
+                    item["material_number"],
+                    fmt_decimal(item["minimum_stock"], 1),
+                    fmt_decimal(item["average_quantity"], 1),
+                    fmt_decimal(item["difference"], 1),
+                    item["abc_segment"],
+                ]
+            )
+        else:
+            material_detail_rows.append(
+                [
+                    item["label"],
+                    item["material_number"],
+                    item["abc_segment"],
+                    fmt_compact(item["total_quantity"], 1),
+                    fmt_pct(item["quantity_share_pct"], 1),
+                    fmt_decimal(item["average_quantity"], 1),
+                ]
+            )
 
     advanced_section = f"""
     <section id="tab-pokrocila" class="section">
@@ -1522,7 +2010,7 @@ def build_html(dashboard: dict) -> str:
       <div class="analysis-report">
         <div class="analysis-head">
           <div class="analysis-kicker">Dataset 2 | Pohyby materiálu</div>
-          <div class="card-title">Pokročilá úloha: segmentácia prefixov podľa prevádzkového rizika</div>
+          <div class="card-title">Pokročilá úloha: ABC koncentrácia objemu a kontrola top materiálov</div>
           <div class="analysis-label">Analytická otázka</div>
           <p class="analysis-question">{escape(advanced["material"]["question"])}</p>
         </div>
@@ -1542,36 +2030,28 @@ def build_html(dashboard: dict) -> str:
 
         <div class="analysis-grid">
           <div class="card canvas-card">
-            <div class="card-title">Podiel objemu podľa segmentu</div>
-            <p class="table-intro">Graf ukazuje, v ktorých segmentoch sa koncentruje celkové množstvo materiálu.</p>
+            <div class="card-title">{escape(advanced["material"]["chart_title"])}</div>
+            <p class="table-intro">{escape(advanced["material"]["chart_intro"])}</p>
             <canvas id="chartMaterialSegmentsAdvanced" height="250"></canvas>
           </div>
           {render_table(
-              "Prehľad segmentov prefixov",
+              advanced["material"]["segment_table_title"],
               [
                   "Segment",
-                  "Prefixy",
-                  "Podiel pohybov",
+                  "Materiály",
+                  "Podiel materiálov",
                   "Podiel množstva",
               ],
               material_segment_rows,
-              intro="Segmenty oddeľujú stabilné skupiny od prefixov s vysokým dopadom alebo neštandardnou koncentráciou aktivity.",
+              intro=advanced["material"]["segment_table_intro"],
           )}
         </div>
 
         {render_table(
-            "Prefixy na prioritný monitoring",
-            [
-                "Prefix",
-                "Segment",
-                "Podiel pohybov",
-                "Podiel množstva",
-                "Aktívne mesiace",
-                "Peak mesiac",
-                "Dôvod",
-            ],
-            material_priority_rows,
-            intro="Tabuľka zvýrazňuje prefixy, ktoré majú najväčší objemový dopad alebo neštandardne koncentrované správanie.",
+            advanced["material"]["detail_table_title"],
+            advanced["material"]["detail_table_headers"],
+            material_detail_rows,
+            intro=advanced["material"]["detail_table_intro"],
         )}
 
         <div class="analysis-grid">
@@ -3674,14 +4154,14 @@ def build_html(dashboard: dict) -> str:
 
     function drawMaterialCharts() {
       drawBarChart(
-        "chartMaterialMoves",
-        dashboard.material.charts.pohyby_podla_mesiaca,
+        "chartMaterialUnique",
+        dashboard.material.charts.unikatne_materialy_podla_mesiaca,
         palette.accent3,
         (value) => formatNumber(value, 0),
         {
           tooltip: true,
           maxVisibleLabels: 12,
-          tooltipFormatter: (value) => `Počet pohybov: ${formatNumber(value, 0)}`,
+          tooltipFormatter: (value) => `Unikátne materiály: ${formatNumber(value, 0)}`,
         }
       );
       drawBarChart(
@@ -3707,7 +4187,31 @@ def build_html(dashboard: dict) -> str:
           tooltipValueFormatter: (item, value, pctText) => `${formatNumber(value, 0)} materiálov | ${pctText}`,
         }
       );
-      drawHorizontalBars("chartTopPrefixes", dashboard.material.charts.top_prefixy_podla_pohybov, palette.accent3);
+      drawHorizontalBars(
+        "chartTopMaterials",
+        dashboard.material.charts.top_materialy_podla_objemu,
+        palette.accent3,
+        (value) => formatCompact(value),
+        {
+          tooltip: true,
+          tooltipFormatter: (value) => `Celkové množstvo: ${formatNumber(value, 1)}`,
+        }
+      );
+      if (
+        dashboard.material.comparison_chart_generated
+        && dashboard.material.charts.porovnanie_priemerneho_mnozstva_a_minima_skladu.length
+      ) {
+        drawHorizontalBars(
+          "chartMaterialMinStockComparison",
+          dashboard.material.charts.porovnanie_priemerneho_mnozstva_a_minima_skladu,
+          palette.accent2,
+          (value) => formatNumber(value, 1),
+          {
+            tooltip: true,
+            tooltipFormatter: (value) => `Deficit voči minimu: ${formatNumber(value, 1)}`,
+          }
+        );
+      }
     }
 
     function drawAdvancedCharts() {
@@ -3786,21 +4290,53 @@ def build_html(dashboard: dict) -> str:
     return html
 
 
+def print_build_summary(material_views: dict[str, object]) -> None:
+    kpi_summary = material_views["kpi_summary"]
+    material_monthly = material_views["material_monthly"]
+    abc_verification = material_views["abc_verification"]
+    top_materials = material_views["top_materials"]
+    lookup_info = material_views["lookup"]
+    comparison_chart_generated = material_views["comparison_chart_generated"]
+
+    print("Build summary:")
+    print(f"  rides input path: {JAZDY_INPUT}")
+    print(f"  material input path: {MATERIAL_INPUT}")
+    print(f"  html output path: {HTML_OUTPUT}")
+    print(f"  material row count: {kpi_summary['total_rows']}")
+    print(f"  distinct material count: {kpi_summary['unique_materials']}")
+    print(f"  total quantity: {kpi_summary['total_quantity']:.1f}")
+    print(f"  average quantity: {kpi_summary['average_quantity']:.1f}")
+    print(f"  zero quantity rows: {kpi_summary['zero_rows']}")
+    print("  first 5 monthly values for Unikátne materiály podľa mesiaca:")
+    for row in material_monthly.head(5).itertuples(index=False):
+        print(f"    {row.year_month}: {int(row.unique_material_count)}")
+    print("  first 5 monthly values for Objem pohybov podľa mesiaca:")
+    for row in material_monthly.head(5).itertuples(index=False):
+        print(f"    {row.year_month}: {float(row.total_quantity):.1f}")
+    print(f"  ABC segment counts: {abc_verification['segment_counts']}")
+    print("  top 10 materials by total quantity:")
+    for row in top_materials.itertuples(index=False):
+        print(f"    {row.material_number} | {row.display_label} | {float(row.total_quantity):.1f}")
+    print(f"  RegCis_ciselnik.xlsx found: {lookup_info['found']}")
+    print(
+        "  stock-minimum comparison chart: "
+        + ("generated" if comparison_chart_generated else "skipped")
+    )
+
+
 def main() -> None:
     VIS_DIR.mkdir(parents=True, exist_ok=True)
 
     jazdy = load_jazdy_dataset(JAZDY_INPUT)
     material = load_material_dataset(MATERIAL_INPUT)
+    material_views = build_material_views(material)
 
-    dashboard = build_dashboard_data(jazdy, material)
+    dashboard = build_dashboard_data(jazdy, material, material_views=material_views)
 
     html = build_html(dashboard)
     HTML_OUTPUT.write_text(html, encoding="utf-8")
 
-    print("Built HTML dashboard:")
-    print(f"  source jazdy: {JAZDY_INPUT}")
-    print(f"  source material: {MATERIAL_INPUT}")
-    print(f"  output html: {HTML_OUTPUT}")
+    print_build_summary(material_views)
 
 
 if __name__ == "__main__":
