@@ -56,7 +56,6 @@ Ak virtualne prostredie este nemate:
 python3 -m venv .venv
 source .venv/bin/activate
 pip install pandas openpyxl
-python scripts/01_prepare_data.py
 python scripts/02_build_dashboard.py
 ```
 
